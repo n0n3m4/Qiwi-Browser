@@ -5,3 +5,4 @@ Extensions-browserAction-pageAction-schemas.patch
 Install-crx-downloads-by-file-extension.patch
 Extensions-no-off-store-safety-check.patch
 Extensions-always-reload-killed-background-pages.patch
+Extensions-typed-extension-urls-no-crash.patch

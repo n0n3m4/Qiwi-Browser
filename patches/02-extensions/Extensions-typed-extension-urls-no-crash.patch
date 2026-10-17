@@ -1,0 +1,65 @@
+From b6dffe8b616295f261699f924358b39c4351702d Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 17:46:12 +0500
+Subject: [PATCH] Extensions: typed chrome-extension:// URLs no longer crash
+ the browser
+
+LocationBarMediator hands every chrome-extension:// URL entered in the
+omnibox to ExtensionUtilBridge.onOmniboxExtensionInputEntered, meant for
+extension keyword matches (chrome-extension://<id>/?q=...). Typed URLs
+and history suggestions take the same path, so a mistyped ID (or an
+extension killed after its suggestion was shown) hit
+CHECK(extension) in ExtensionOmniboxEventRouter::OnInputEntered and
+killed the browser, and a real extension page (uBlock's dashboard) was
+never opened but sent to the extension as keyword input.
+
+Only dispatch to the extension when it is enabled, declares an omnibox
+keyword and the URL has the keyword form; open anything else as a typed
+URL.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../extensions/extension_util_bridge.cc       | 22 +++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/chrome/browser/ui/android/extensions/extension_util_bridge.cc b/chrome/browser/ui/android/extensions/extension_util_bridge.cc
+index 7204c0b852..3df9b0eaa2 100644
+--- a/chrome/browser/ui/android/extensions/extension_util_bridge.cc
++++ b/chrome/browser/ui/android/extensions/extension_util_bridge.cc
+@@ -13,7 +13,10 @@
+ #include "base/files/file_util.h"
+ #include "chrome/browser/extensions/api/omnibox/omnibox_api.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/common/extensions/api/omnibox/omnibox_handler.h"
++#include "content/public/browser/page_navigator.h"
+ #include "content/public/browser/web_contents.h"
++#include "extensions/browser/extension_registry.h"
+ #include "extensions/buildflags/buildflags.h"
+ #include "net/base/url_util.h"
+ #include "ui/base/window_open_disposition.h"
+@@ -100,6 +103,25 @@ void JNI_ExtensionUtilBridge_OnOmniboxExtensionInputEntered(
+     disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+   }
+ 
++  // kiwi: LocationBarMediator sends every typed chrome-extension:// URL here,
++  // not only extension keyword matches (chrome-extension://<id>/?q=...).
++  // OnInputEntered() CHECKs that the extension is enabled, so a typo'd ID or an
++  // extension killed after the suggestion was shown crashed the browser. Open
++  // anything that is not a keyword match of an enabled extension as a URL.
++  const extensions::Extension* extension =
++      extensions::ExtensionRegistry::Get(web_contents->GetBrowserContext())
++          ->enabled_extensions()
++          .GetByID(extension_id);
++  if (!extension || extensions::OmniboxInfo::GetKeyword(extension).empty() ||
++      url.path() != "/") {
++    web_contents->OpenURL(
++        content::OpenURLParams(url, content::Referrer(), disposition,
++                               ui::PAGE_TRANSITION_TYPED,
++                               /*is_renderer_initiated=*/false),
++        /*navigation_handle_callback=*/{});
++    return;
++  }
++
+   extensions::ExtensionOmniboxEventRouter::OnInputEntered(
+       web_contents, extension_id, input_text, disposition);
+ }
