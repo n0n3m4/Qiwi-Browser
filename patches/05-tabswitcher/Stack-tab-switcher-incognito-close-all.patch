@@ -1,0 +1,58 @@
+From d9d5fbd6b48d719899f7404a4a8c44de7a2ce3ab Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 11:41:25 +0500
+Subject: [PATCH] Stack tab switcher: 'Close all Incognito tabs' label; slide
+ the incognito stack away on close-all
+
+With TabClosureMethodRefactor off (default) close-all is reported via willCloseAllTabs, not willCloseTabs;
+route it to onTabsAllClosing so the emptied stack animates out instead of peeking.
+---
+ .../compositor/layouts/phone/StackLayout.java        |  4 +++-
+ .../compositor/layouts/phone/StackLayoutBase.java    | 12 ++++++++++++
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
+index 4d860fb3fe..ecec65020f 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
+@@ -359,7 +359,9 @@ public class StackLayout extends StackLayoutBase {
+         addMenuItem(
+                         menu,
+                         MENU_ID_CLOSE_ALL_TABS,
+-                        R.string.menu_close_all_tabs,
++                        mTabModelSelector.isIncognitoSelected()
++                                ? R.string.menu_close_all_incognito_tabs
++                                : R.string.menu_close_all_tabs,
+                         R.drawable.material_ic_close_24dp,
+                         tint)
+                 .setEnabled(mTabModelSelector.getCurrentModel().getCount() > 0);
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
+index fcf475d2b0..abe9709e0f 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
+@@ -37,6 +37,7 @@ import org.chromium.chrome.browser.compositor.layouts.phone.stack.OverlappingSta
+ import org.chromium.chrome.browser.compositor.layouts.phone.stack.Stack;
+ import org.chromium.chrome.browser.compositor.layouts.phone.stack.StackTab;
+ import org.chromium.chrome.browser.compositor.scene_layer.TabListSceneLayer;
++import org.chromium.chrome.browser.flags.ChromeFeatureList;
+ import org.chromium.chrome.browser.homepage.HomepageManager;
+ import org.chromium.chrome.browser.layouts.EventFilter;
+ import org.chromium.chrome.browser.layouts.LayoutType;
+@@ -605,6 +606,17 @@ public abstract class StackLayoutBase extends Layout {
+                         for (Tab tab : tabs) onTabClosing(time, tab.getId());
+                     }
+ 
++                    // TabClosureMethodRefactor is off by default in 153, so a close-all only
++                    // sends the legacy willCloseAllTabs, never willCloseTabs.
++                    // ponytail: single/multiple legacy closes still rely on uiRequestingCloseTab;
++                    // mirror willCloseTab/willCloseMultipleTabs if model-driven closes must animate.
++                    @Override
++                    public void willCloseAllTabs(boolean incognito) {
++                        if (!isActive()) return;
++                        if (ChromeFeatureList.sTabClosureMethodRefactor.isEnabled()) return;
++                        onTabsAllClosing(LayoutManagerImpl.time(), incognito);
++                    }
++
+                     @Override
+                     public void tabClosureUndone(Tab tab) {
+                         if (!isActive()) return;

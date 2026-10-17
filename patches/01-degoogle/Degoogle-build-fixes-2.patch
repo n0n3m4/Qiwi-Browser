@@ -1,0 +1,98 @@
+From 23ac39c07dc36b33cb1073bb01f24e1c1e9a9137 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 09:21:40 +0500
+Subject: [PATCH] Degoogle build/link fixes 2: brand callback without
+ google_brand, restore ntp_tiles metrics and family_info_feedback_source, Java
+ side of SelectFileDialog.showToast, glic_private_api extra arg
+
+---
+ chrome/browser/browser_process_impl.cc                 |  5 ++---
+ .../extensions/api/glic_private/glic_private_api.cc    |  2 +-
+ chrome/browser/feedback/BUILD.gn                       |  9 +++++----
+ components/ntp_tiles/BUILD.gn                          |  2 ++
+ .../src/org/chromium/ui/base/SelectFileDialog.java     | 10 ++++++++++
+ 5 files changed, 20 insertions(+), 8 deletions(-)
+
+diff --git a/chrome/browser/browser_process_impl.cc b/chrome/browser/browser_process_impl.cc
+index c917d239fb..ccabc1393f 100644
+--- a/chrome/browser/browser_process_impl.cc
++++ b/chrome/browser/browser_process_impl.cc
+@@ -1401,9 +1401,8 @@ activity_reporter::ActivityReporter* BrowserProcessImpl::activity_reporter() {
+             // Never send cookies for activity reports.
+             base::BindRepeating([](const GURL& url) { return false; })),
+         base::BindRepeating(&chrome::GetChannel), base::BindRepeating([] {
+-          std::string brand;
+-          google_brand::GetBrand(&brand);
+-          return brand;
++          // kiwi: degoogle build fix (//chrome/browser/google is not built).
++          return std::string();
+         }),
+         base::BindRepeating(&updater::SetActive),
+ #if BUILDFLAG(IS_WIN)
+diff --git a/chrome/browser/extensions/api/glic_private/glic_private_api.cc b/chrome/browser/extensions/api/glic_private/glic_private_api.cc
+index 61df9441dc..cf57f4a6bc 100644
+--- a/chrome/browser/extensions/api/glic_private/glic_private_api.cc
++++ b/chrome/browser/extensions/api/glic_private/glic_private_api.cc
+@@ -323,7 +323,7 @@ void GetPromptFromId(Profile& profile,
+           .SetContentType("application/json")
+           .SetConsentLevel(signin::ConsentLevel::kSignin)
+           .SetPostData(post_data)
+-          .Build(), traffic_annotation);
++          .Build());  // kiwi: degoogle build fix
+ 
+   auto* fetcher_ptr = fetcher.get();
+   fetcher_ptr->Fetch(base::BindOnce(&OnEndpointFetcherResponse,
+diff --git a/chrome/browser/feedback/BUILD.gn b/chrome/browser/feedback/BUILD.gn
+index 33681d5953..16ea805888 100644
+--- a/chrome/browser/feedback/BUILD.gn
++++ b/chrome/browser/feedback/BUILD.gn
+@@ -26,10 +26,11 @@ source_set("feedback") {
+     "//google_apis",
+   ]
+   if (is_android) {
+-    # sources += [
+-    #   "android/family_info_feedback_source.cc",
+-    #   "android/family_info_feedback_source.h",
+-    # ]
++    # kiwi: degoogle build fix (Java FamilyInfoFeedbackSource needs the JNI).
++    sources += [
++      "android/family_info_feedback_source.cc",
++      "android/family_info_feedback_source.h",
++    ]
+     public_deps += [
+       "//components/supervised_user/core/browser",
+       "//components/supervised_user/core/browser:fetcher",
+diff --git a/components/ntp_tiles/BUILD.gn b/components/ntp_tiles/BUILD.gn
+index adec5dbfb8..537405b964 100644
+--- a/components/ntp_tiles/BUILD.gn
++++ b/components/ntp_tiles/BUILD.gn
+@@ -36,6 +36,8 @@ static_library("ntp_tiles") {
+     "icon_cacher.h",
+     "icon_cacher_impl.cc",
+     "icon_cacher_impl.h",
++    "metrics.cc",  # kiwi: degoogle build fix
++    "metrics.h",
+     "most_visited_sites.cc",
+     "most_visited_sites.h",
+     "ntp_tile.cc",
+diff --git a/ui/android/java/src/org/chromium/ui/base/SelectFileDialog.java b/ui/android/java/src/org/chromium/ui/base/SelectFileDialog.java
+index 77e6992dfd..29ad6579e5 100644
+--- a/ui/android/java/src/org/chromium/ui/base/SelectFileDialog.java
++++ b/ui/android/java/src/org/chromium/ui/base/SelectFileDialog.java
+@@ -336,6 +336,16 @@ public class SelectFileDialog implements WindowAndroid.IntentCallback, PhotoPick
+      *     ACTION_CREATE_DOCUMENT.
+      * @param window The WindowAndroid that can show intents
+      */
++    // kiwi: degoogle build fix (Java side of SelectFileDialogImpl::ShowToast).
++    @CalledByNative
++    private void showToast(String message) {
++        org.chromium.ui.widget.Toast.makeText(
++                        ContextUtils.getApplicationContext(),
++                        message,
++                        org.chromium.ui.widget.Toast.LENGTH_SHORT)
++                .show();
++    }
++
+     @CalledByNative
+     @Initializer
+     protected void selectFile(

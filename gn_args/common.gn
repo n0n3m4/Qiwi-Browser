@@ -1,0 +1,5 @@
+# Extra GN args appended to both scripts/build.sh and scripts/build_release.sh.
+# Touch to Search sends tapped text to Google; the channel gates trunk/dev-only extension APIs.
+build_contextual_search = false
+android_channel = "stable"
+chrome_public_manifest_package = "com.qiwi.browser"

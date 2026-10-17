@@ -1,0 +1,41 @@
+From 0cc5a579e437f8b9e0dbac4b33b691be1765e9b0 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 17:36:13 +0500
+Subject: [PATCH] DevTools: survive activity recreation, null-check WebContents
+
+DevToolsActivity closed the live frontend tab when recreated (dark-mode
+switch, fold); keep it. The Developer tools menu item / F12 require a
+tab with WebContents.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../src/org/chromium/chrome/browser/app/ChromeActivity.java    | 1 +
+ .../org/chromium/chrome/browser/devtools/DevToolsActivity.java | 3 +++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
+index 67ce688c4b..2f7d2c479c 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
+@@ -3252,6 +3252,7 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
+         }
+ 
+         if (id == R.id.dev_tools
++                && currentTab.getWebContents() != null
+                 && DevToolsWindowAndroid.isDevToolsAllowedFor(
+                         currentTab.getProfile(), currentTab.getWebContents())) {
+             DevToolsWindowAndroid.openDevTools(currentTab.getWebContents());
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/devtools/DevToolsActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/devtools/DevToolsActivity.java
+index dc0fd3076f..c7da164ee1 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/devtools/DevToolsActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/devtools/DevToolsActivity.java
+@@ -74,6 +74,9 @@ public class DevToolsActivity extends BaseCustomTabActivity {
+         Intent intent = getIntent();
+         intent.setExtrasClassLoader(WebContents.class.getClassLoader());
+         WebContents webContents = intent.getParcelableExtra(WEB_CONTENTS_KEY);
++        // Activity recreation (dark mode switch, fold/unfold) keeps the live frontend tab: it is
++        // already attached, and closing it would empty the model and finish the activity.
++        if (webContents != null && existingTab.getWebContents() == webContents) return;
+         ChromeAndroidTask task = getChromeAndroidTaskSupplier().get();
+         Profile profile = tabModel.getProfile();
+         // NOTE: If this condition is not met, this activity brifly shows up, but quickly disappears

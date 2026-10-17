@@ -1,0 +1,52 @@
+From 81c836994b1071e3f22b84302f61e16da13df27a Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 09:48:00 +0500
+Subject: [PATCH] Fix NTP crash when the segmentation platform has no
+ home-modules registry
+
+With Remove-segmentation-platform the dummy service has no HomeModulesCardRegistry; return an
+empty successful classification instead of dereferencing null.
+---
+ .../android/home_modules_ranking_helper.cc        | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/chrome/browser/segmentation_platform/android/home_modules_ranking_helper.cc b/chrome/browser/segmentation_platform/android/home_modules_ranking_helper.cc
+index da83120c70..a25a17037c 100644
+--- a/chrome/browser/segmentation_platform/android/home_modules_ranking_helper.cc
++++ b/chrome/browser/segmentation_platform/android/home_modules_ranking_helper.cc
+@@ -51,6 +51,15 @@ static void JNI_HomeModulesRankingHelper_GetClassificationResult(
+   segmentation_platform::home_modules::HomeModulesCardRegistry* registry =
+       segmentation_platform::SegmentationPlatformServiceFactory::
+           GetHomeModulesCardRegistry(profile);
++  if (!service || !registry) {
++    // No registry (e.g. DummySegmentationPlatformService): report an empty
++    // module list instead of dereferencing null, so the NTP does not crash.
++    // Java asserts the status is kSucceeded.
++    RunGetClassificationResultCallback(
++        callback, segmentation_platform::ClassificationResult(
++                      segmentation_platform::PredictionStatus::kSucceeded));
++    return;
++  }
+   scoped_refptr<segmentation_platform::InputContext> native_input_context =
+       segmentation_platform::InputContextAndroid::ToNativeInputContext(
+           env, input_context);
+@@ -72,6 +81,9 @@ static void JNI_HomeModulesRankingHelper_NotifyCardShown(
+   segmentation_platform::home_modules::HomeModulesCardRegistry* registry =
+       segmentation_platform::SegmentationPlatformServiceFactory::
+           GetHomeModulesCardRegistry(profile);
++  if (!registry) {
++    return;
++  }
+   std::string native_card_label = ConvertJavaStringToUTF8(env, card_label);
+   registry->NotifyCardShown(native_card_label.c_str());
+ }
+@@ -84,6 +96,9 @@ static void JNI_HomeModulesRankingHelper_NotifyCardInteracted(
+   segmentation_platform::home_modules::HomeModulesCardRegistry* registry =
+       segmentation_platform::SegmentationPlatformServiceFactory::
+           GetHomeModulesCardRegistry(profile);
++  if (!registry) {
++    return;
++  }
+   std::string native_card_label = ConvertJavaStringToUTF8(env, card_label);
+   registry->NotifyCardInteracted(native_card_label.c_str());
+ }

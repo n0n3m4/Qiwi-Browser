@@ -1,0 +1,178 @@
+From a508d83cb0846548912b473f8b3e867c57155fa8 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 10:30:50 +0500
+Subject: [PATCH] Stack tab switcher: M90 open/close transition and font parity
+
+- The switcher bar fades in over 200 ms (linear) when the stack starts
+  showing and fades out over 200 ms from startHiding(), like M90's
+  TabSwitcherModeTTPhone (TAB_SWITCHER_MODE_NORMAL_ANIMATION_DURATION_MS).
+  On exit the card's composited toolbar now crossfades into the bar's
+  place instead of being covered by an opaque bar that then disappears
+  in one frame. The bar ignores clicks while it fades out.
+- The static tab position on enter/exit (and the toolbar line-up
+  offset) uses the browser controls content offset again, as in M90,
+  instead of our bar height. The bar also covers the status bar, which
+  the compositor does not draw under, so the exiting card landed 63 px
+  (the status bar inset) too low and jumped up at doneHiding.
+- Bar label 14sp medium (TextMediumThick, M90's tab_switcher_toolbar)
+  instead of 16sp; card titles 13sp on phones via
+  compositor_tab_title_text_size (14sp on sw600dp, unchanged there).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../res/layout/stack_tab_switcher_toolbar.xml |  2 +-
+ .../layouts/content/TitleBitmapFactory.java   |  2 +
+ .../compositor/layouts/phone/StackLayout.java | 40 ++++++++++++++++++-
+ .../layouts/phone/StackLayoutBase.java        | 10 +++++
+ .../compositor/layouts/phone/stack/Stack.java |  2 +-
+ 5 files changed, 52 insertions(+), 4 deletions(-)
+
+diff --git a/chrome/android/java/res/layout/stack_tab_switcher_toolbar.xml b/chrome/android/java/res/layout/stack_tab_switcher_toolbar.xml
+index be0ad98a5a..d7bf42f704 100644
+--- a/chrome/android/java/res/layout/stack_tab_switcher_toolbar.xml
++++ b/chrome/android/java/res/layout/stack_tab_switcher_toolbar.xml
+@@ -35,7 +35,7 @@
+         android:text="@string/menu_new_tab"
+         android:singleLine="true"
+         android:ellipsize="end"
+-        android:textAppearance="@style/TextAppearance.TextLarge.Primary"
++        android:textAppearance="@style/TextAppearance.TextMediumThick.Primary"
+         android:focusable="true" />
+ 
+     <org.chromium.ui.widget.ChromeImageButton
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/content/TitleBitmapFactory.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/content/TitleBitmapFactory.java
+index 2c8b395c72..980a5d77fa 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/content/TitleBitmapFactory.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/content/TitleBitmapFactory.java
+@@ -97,6 +97,8 @@ public class TitleBitmapFactory {
+                 /* applyTextSize= */ true,
+                 !mIncognito);
+         mTabTextPaint.setFakeBoldText(fakeBoldText);
++        // 13sp on phones (stack switcher cards, as in M90), 14sp = TextMedium on sw600dp.
++        mTabTextPaint.setTextSize(res.getDimension(R.dimen.compositor_tab_title_text_size));
+         mTabTextPaint.density = density;
+         enforceMaxTextHeight(mTabTextPaint, tabStripHeightPx);
+ 
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
+index c6070d158d..960d7c7dd1 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
+@@ -36,6 +36,7 @@ import org.chromium.chrome.browser.tabmodel.TabList;
+ import org.chromium.chrome.browser.tabmodel.TabModel;
+ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+ import org.chromium.components.browser_ui.styles.ChromeColors;
++import org.chromium.ui.interpolators.Interpolators;
+ 
+ import java.util.List;
+ 
+@@ -55,6 +56,7 @@ public class StackLayout extends StackLayoutBase {
+     private static final int MENU_ID_NEW_INCOGNITO_TAB = 1;
+     private static final int MENU_ID_CLOSE_ALL_TABS = 2;
+     private static final int MENU_ID_SETTINGS = 3;
++    private static final long TOP_BAR_FADE_DURATION_MS = 200;
+ 
+     /** Whether the current fling animation is the result of switching stacks. */
+     private boolean mFlingFromModelChange;
+@@ -68,6 +70,8 @@ public class StackLayout extends StackLayoutBase {
+     private @Nullable ImageButton mMenuButton;
+     private final int mTopBarFallbackHeightPx;
+     private int mTopBarInsetTopPx;
++    // Set from startHiding() until the next show(): the bar is fading out and ignores clicks.
++    private boolean mTopBarFadingOut;
+ 
+     // Last state pushed to the top bar / back press supplier (see refreshTopBarAndBackState()).
+     private int mShownIncognitoSelected = -1;
+@@ -265,6 +269,8 @@ public class StackLayout extends StackLayoutBase {
+     public void detachViews() {
+         super.detachViews();
+         if (mTopBar != null && mTopBar.getParent() != null) {
++            mTopBar.animate().cancel();
++            mTopBar.setAlpha(1f);
+             ((ViewGroup) mTopBar.getParent()).removeView(mTopBar);
+         }
+     }
+@@ -272,9 +278,33 @@ public class StackLayout extends StackLayoutBase {
+     @Override
+     public void show(long time, boolean animate) {
+         resetTopBarState();
++        mTopBarFadingOut = false;
++        if (mTopBar != null) {
++            mTopBar.animate().cancel();
++            mTopBar.setAlpha(animate ? 0f : 1f);
++            if (animate) fadeTopBar(1f);
++        }
+         super.show(time, animate);
+     }
+ 
++    @Override
++    public void startHiding() {
++        super.startHiding();
++        // M90's TabSwitcherModeTTPhone faded the switcher toolbar out from the first frame of the
++        // exit, so the card's composited toolbar crossfades into its place.
++        mTopBarFadingOut = true;
++        if (mTopBar != null) fadeTopBar(0f);
++    }
++
++    /** M90 TopToolbarCoordinator.TAB_SWITCHER_MODE_NORMAL_ANIMATION_DURATION_MS, linear. */
++    private void fadeTopBar(float alpha) {
++        assert mTopBar != null;
++        mTopBar.animate()
++                .alpha(alpha)
++                .setDuration(TOP_BAR_FADE_DURATION_MS)
++                .setInterpolator(Interpolators.LINEAR_INTERPOLATOR);
++    }
++
+     @Override
+     protected void updateLayout(long time, long dt) {
+         super.updateLayout(time, dt);
+@@ -300,8 +330,14 @@ public class StackLayout extends StackLayoutBase {
+         mNewTabButton = topBar.findViewById(R.id.stack_new_tab_button);
+         mMenuButton = topBar.findViewById(R.id.stack_menu_button);
+ 
+-        mNewTabButton.setOnClickListener(v -> launchNtp(isIncognitoStackShown()));
+-        mMenuButton.setOnClickListener(this::showOverflowMenu);
++        mNewTabButton.setOnClickListener(
++                v -> {
++                    if (!mTopBarFadingOut) launchNtp(isIncognitoStackShown());
++                });
++        mMenuButton.setOnClickListener(
++                v -> {
++                    if (!mTopBarFadingOut) showOverflowMenu(v);
++                });
+ 
+         // Edge-to-edge: keep the bar's controls below the status bar. Chrome consumes the
+         // dispatched insets above android.R.id.content, so read the root insets instead.
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
+index b359fde1b8..3894544276 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
+@@ -1403,6 +1403,16 @@ public abstract class StackLayoutBase extends Layout {
+         return mBrowserControls.getContentOffset() / mDpToPx;
+     }
+ 
++    /**
++     * @return Where the selected tab's content sits outside the switcher, in dp: the browser
++     *     controls' content offset, which M90 used for the static tab position on enter and exit.
++     *     StackLayout lays the stack out below its own bar instead, which also covers the status
++     *     bar that the compositor does not draw under.
++     */
++    public final float getBrowsingContentOffsetDp() {
++        return mBrowserControls.getContentOffset() / mDpToPx;
++    }
++
+     /**
+      * @return The offset of the content from the bottom of the screen in dp.
+      */
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/stack/Stack.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/stack/Stack.java
+index e6409a50af..df073e860d 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/stack/Stack.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/stack/Stack.java
+@@ -2015,7 +2015,7 @@ public abstract class Stack {
+         mDiscardDirection = getDefaultDiscardDirection();
+         final float opaqueTopPadding = mBorderTopPadding - mBorderTransparentTop;
+         mAnimationFactory = new StackAnimation(this, mLayout.getWidth(), mLayout.getHeight(),
+-                mLayout.getTopContentOffsetDp(), mBorderTopPadding, opaqueTopPadding,
++                mLayout.getBrowsingContentOffsetDp(), mBorderTopPadding, opaqueTopPadding,
+                 mBorderLeftPadding, mCurrentMode);
+         mViewAnimationFactory = new StackViewAnimation(mLayout.getContext().getResources());
+         if (mStackTabs == null) return;

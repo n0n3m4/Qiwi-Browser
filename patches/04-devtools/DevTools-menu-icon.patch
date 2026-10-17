@@ -1,0 +1,96 @@
+From b897372108387fb27fb0272ab37dfda4bdbee8f7 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 11:41:19 +0500
+Subject: [PATCH] DevTools app-menu item: terminal icon (Material Symbols
+ 'terminal')
+
+---
+ chrome/android/chrome_java_resources.gni       |  1 +
+ .../java/res/drawable/ic_devtools_24dp.xml     | 18 ++++++++++++++++++
+ .../tabbed_mode/MoreToolsItemBuilder.java      |  6 +++---
+ .../TabbedAppMenuPropertiesDelegate.java       |  5 +++--
+ 4 files changed, 25 insertions(+), 5 deletions(-)
+ create mode 100644 chrome/android/java/res/drawable/ic_devtools_24dp.xml
+
+diff --git a/chrome/android/chrome_java_resources.gni b/chrome/android/chrome_java_resources.gni
+index bd39979b25..881dd005b3 100644
+--- a/chrome/android/chrome_java_resources.gni
++++ b/chrome/android/chrome_java_resources.gni
+@@ -335,6 +335,7 @@ chrome_java_resources = [
+   "java/res/drawable/ic_cloud_off_24dp.xml",
+   "java/res/drawable/ic_cloud_offline_24dp.xml",
+   "java/res/drawable/ic_colorize_24dp.xml",
++  "java/res/drawable/ic_devtools_24dp.xml",
+   "java/res/drawable/ic_dock_to_right_24dp.xml",
+   "java/res/drawable/ic_drag_handle_24dp.xml",
+   "java/res/drawable/ic_error.xml",
+diff --git a/chrome/android/java/res/drawable/ic_devtools_24dp.xml b/chrome/android/java/res/drawable/ic_devtools_24dp.xml
+new file mode 100644
+index 0000000000..8386a8c969
+--- /dev/null
++++ b/chrome/android/java/res/drawable/ic_devtools_24dp.xml
+@@ -0,0 +1,18 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++Copyright 2026 The Chromium Authors
++Use of this source code is governed by a BSD-style license that can be
++found in the LICENSE file.
++-->
++
++<!-- Material Symbols "terminal" (outlined). -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="960"
++    android:viewportHeight="960"
++    android:tint="?attr/colorControlNormal">
++    <path
++        android:fillColor="@android:color/white"
++        android:pathData="M160,800Q127,800 103.5,776.5Q80,753 80,720L80,240Q80,207 103.5,183.5Q127,160 160,160L800,160Q833,160 856.5,183.5Q880,207 880,240L880,720Q880,753 856.5,776.5Q833,800 800,800L160,800ZM160,720L800,720L800,320L160,320L160,720ZM300,680L244,624L347,520L243,416L300,360L460,520L300,680ZM480,680L480,600L720,600L720,680L480,680Z"/>
++</vector>
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+index 87a01b790b..e65da435ef 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+@@ -265,15 +265,15 @@ public class MoreToolsItemBuilder {
+     }
+ 
+     /** Builds the "Dev tools" menu item. */
+-    public ListItem buildDevToolsItem() {
++    public ListItem buildDevToolsItem(boolean showIcon) {
+         return AppMenuItemUtils.createStandardListItem(
+                 AppMenuItemUtils.buildModelForStandardMenuItem(
+                         mContext,
+                         mAppMenuItemTheme,
+                         R.id.dev_tools,
+                         R.string.menu_dev_tools,
+-                        Resources.ID_NULL,
++                        showIcon ? R.drawable.ic_devtools_24dp : Resources.ID_NULL,
+                         mIsMenuIconAtStart),
+-                /* showIcon= */ false);
++                showIcon);
+     }
+ }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+index 055c79b4f0..aa1ae87e32 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+@@ -562,7 +562,7 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
+ 
+         // kiwi: Developer tools (phones have no "More tools" submenu by default).
+         if (mMoreToolsItemBuilder.shouldShowDevToolsItem(currentTab)) {
+-            modelList.add(mMoreToolsItemBuilder.buildDevToolsItem());
++            modelList.add(mMoreToolsItemBuilder.buildDevToolsItem(/* showIcon= */ true));
+         }
+ 
+         // Settings
+@@ -1373,7 +1373,8 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
+                     }
+ 
+                     if (mMoreToolsItemBuilder.shouldShowDevToolsItem(currentTab)) {
+-                        submenuItems.add(mMoreToolsItemBuilder.buildDevToolsItem());
++                        submenuItems.add(
++                                mMoreToolsItemBuilder.buildDevToolsItem(/* showIcon= */ false));
+                     }
+ 
+                     if (!submenuItems.isEmpty()

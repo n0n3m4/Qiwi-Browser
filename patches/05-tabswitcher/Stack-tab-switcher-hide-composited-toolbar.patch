@@ -1,0 +1,104 @@
+From 64c31bcfcfb832320ad2fb3f96e2c3ab87a913dc Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 09:48:28 +0500
+Subject: [PATCH] Stack tab switcher: keep the composited toolbar out of the
+ stack scene
+
+TopToolbarCoordinator shows its TopToolbarOverlayCoordinator on
+LayoutType.BROWSING | LayoutType.HUB (for the Hub, which covers it with
+its own view). The StackLayout also reports LayoutType.HUB, so the
+composited toolbar was drawn over the stack scene at the browser
+controls' content offset. Our top bar is only status bar + toolbar
+height, so it hid the toolbar exactly - until something grew the top
+controls: the offline status indicator ("No internet connection" /
+"Back online") pushes the toolbar down by its height and the lower part
+of the toolbar showed between our bar and the cards.
+
+Add Layout#shouldDrawSceneOverlay() (default true), consult it when
+LayoutManagerImpl builds the overlay tree, and have StackLayoutBase
+reject the top toolbar overlay.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../chrome/browser/compositor/layouts/Layout.java     |  9 +++++++++
+ .../browser/compositor/layouts/LayoutManagerImpl.java |  3 ++-
+ .../compositor/layouts/phone/StackLayoutBase.java     | 11 +++++++++++
+ 3 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/Layout.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/Layout.java
+index 87dc7290f5..de88f35dac 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/Layout.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/Layout.java
+@@ -19,6 +19,7 @@ import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider
+ import org.chromium.chrome.browser.compositor.layouts.components.LayoutTab;
+ import org.chromium.chrome.browser.layouts.EventFilter;
+ import org.chromium.chrome.browser.layouts.LayoutType;
++import org.chromium.chrome.browser.layouts.SceneOverlay;
+ import org.chromium.chrome.browser.layouts.animation.CompositorAnimationHandler;
+ import org.chromium.chrome.browser.layouts.scene_layer.SceneLayer;
+ import org.chromium.chrome.browser.tab.Tab;
+@@ -550,6 +551,14 @@ public abstract class Layout {
+         return false;
+     }
+ 
++    /**
++     * @return Whether {@code overlay} may be drawn over this layout's scene. Lets a layout that
++     *     brings its own chrome keep a showing overlay out of its scene.
++     */
++    public boolean shouldDrawSceneOverlay(SceneOverlay overlay) {
++        return true;
++    }
++
+     /**
+      * @return True if the host container can set itself as focusable e.g. for accessibility.
+      *         Subclasses can override e.g. to provide a different default focused view.
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerImpl.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerImpl.java
+index c6240b5a06..c319fa2108 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerImpl.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerImpl.java
+@@ -830,7 +830,8 @@ public class LayoutManagerImpl
+ 
+         for (SceneOverlay overlay : mSceneOverlays) {
+             // If the SceneOverlay is not showing, don't bother adding it to the tree.
+-            if (!overlay.isSceneOverlayTreeShowing()) {
++            if (!overlay.isSceneOverlayTreeShowing()
++                    || !mActiveLayout.shouldDrawSceneOverlay(overlay)) {
+                 overlay.removeFromParent();
+                 continue;
+             }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
+index 367d46bb1c..b359fde1b8 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
+@@ -41,6 +41,7 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
+ import org.chromium.chrome.browser.homepage.HomepageManager;
+ import org.chromium.chrome.browser.layouts.EventFilter;
+ import org.chromium.chrome.browser.layouts.LayoutType;
++import org.chromium.chrome.browser.layouts.SceneOverlay;
+ import org.chromium.chrome.browser.layouts.animation.CompositorAnimator;
+ import org.chromium.chrome.browser.layouts.scene_layer.SceneLayer;
+ import org.chromium.chrome.browser.tab.Tab;
+@@ -54,6 +55,7 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
+ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+ import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
+ import org.chromium.chrome.browser.tabmodel.TabModelUtils;
++import org.chromium.chrome.browser.toolbar.top.TopToolbarOverlayCoordinator;
+ import org.chromium.ui.base.LocalizationUtils;
+ import org.chromium.ui.interpolators.Interpolators;
+ import org.chromium.ui.resources.ResourceManager;
+@@ -576,6 +578,15 @@ public abstract class StackLayoutBase extends Layout {
+         mGestureHandler.onUpOrCancel();
+     }
+ 
++    @Override
++    public boolean shouldDrawSceneOverlay(SceneOverlay overlay) {
++        // The composited toolbar is shown on LayoutType.HUB (for the Hub) and sits at the
++        // browser controls' content offset. Our top bar only covers the toolbar's own height, so
++        // anything that grows the top controls (the offline status indicator, ...) pushes the
++        // toolbar below the bar, on top of the cards.
++        return !(overlay instanceof TopToolbarOverlayCoordinator);
++    }
++
+     @Override
+     public @ViewportMode int getViewportMode() {
+         return ViewportMode.ALWAYS_FULLSCREEN;

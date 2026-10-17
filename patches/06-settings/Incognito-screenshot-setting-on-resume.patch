@@ -1,0 +1,51 @@
+From 9aa901a4bc8c424d907ba938ad65a77beb11905c Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 17:36:14 +0500
+Subject: [PATCH] Re-apply the Incognito screenshot setting on resume
+
+The toggle was only re-read on layout or tab-model changes; re-evaluate
+FLAG_SECURE in onResumeWithNative so changing it in Settings takes
+effect on return.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../incognito/IncognitoTabbedSnapshotController.java | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoTabbedSnapshotController.java b/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoTabbedSnapshotController.java
+index f9b1902359..db2def0b5a 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoTabbedSnapshotController.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoTabbedSnapshotController.java
+@@ -15,6 +15,7 @@ import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserv
+ import org.chromium.chrome.browser.layouts.LayoutType;
+ import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
+ import org.chromium.chrome.browser.lifecycle.DestroyObserver;
++import org.chromium.chrome.browser.lifecycle.PauseResumeWithNativeObserver;
+ import org.chromium.chrome.browser.tabmodel.TabModel;
+ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+ 
+@@ -26,7 +27,7 @@ import java.util.function.Supplier;
+  */
+ @NullMarked
+ public class IncognitoTabbedSnapshotController extends IncognitoSnapshotController
+-        implements DestroyObserver {
++        implements DestroyObserver, PauseResumeWithNativeObserver {
+     private final TabModelSelector mTabModelSelector;
+     private final LayoutManagerChrome mLayoutManager;
+     private final LayoutStateObserver mLayoutStateObserver;
+@@ -122,6 +123,15 @@ public class IncognitoTabbedSnapshotController extends IncognitoSnapshotControll
+         mActivityLifecycleDispatcher.register(this);
+     }
+ 
++    // The "Allow screenshots in Incognito" pref may have changed in Settings; re-apply it.
++    @Override
++    public void onResumeWithNative() {
++        updateIncognitoTabSnapshotState();
++    }
++
++    @Override
++    public void onPauseWithNative() {}
++
+     @Override
+     public void onDestroy() {
+         mLayoutManager.removeObserver(mLayoutStateObserver);

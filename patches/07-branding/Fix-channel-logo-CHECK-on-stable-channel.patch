@@ -1,0 +1,43 @@
+From 2c2dd000fe5575bc99873dd2615b3d7058984620 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 10:08:27 +0500
+Subject: [PATCH] Fix CHECK in CurrentChannelLogoResourceId() on a real channel
+ with Chromium branding
+
+chrome://extensions (the "Extensions" app-menu row), chrome://management and
+chrome://theme/current-channel-logo call webui::CurrentChannelLogoResourceId(),
+which for non-Google branding only tolerates Channel::UNKNOWN and hits
+CHECK_IS_TEST() for CANARY/DEV/BETA/STABLE. Our release builds set
+android_channel="stable" (needed to keep trunk-only extension APIs off), so
+tapping "Extensions" on the arm64 release APK killed the browser with SIGTRAP in
+ExtensionsUIConfig::CreateWebUIController. The dev builds never showed it
+because scripts/build.sh silently dropped gn_args/common.gn and they ran as
+UNKNOWN (fixed separately).
+
+Return the single Chromium logo for every channel.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ chrome/browser/ui/webui/current_channel_logo.cc | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/browser/ui/webui/current_channel_logo.cc b/chrome/browser/ui/webui/current_channel_logo.cc
+index 70f983e5c6..e7f008c9d8 100644
+--- a/chrome/browser/ui/webui/current_channel_logo.cc
++++ b/chrome/browser/ui/webui/current_channel_logo.cc
+@@ -25,11 +25,14 @@ int CurrentChannelLogoResourceId() {
+     case version_info::Channel::STABLE:
+       return IDR_PRODUCT_LOGO_32;
+ #else
++    // Chromium branding ships a single logo. Release builds of this browser
++    // run as a real channel (android_channel="stable"), so this must not be
++    // test-only: it was reached from chrome://extensions, chrome://management
++    // and chrome://theme/current-channel-logo and tripped the CHECK.
+     case version_info::Channel::CANARY:
+     case version_info::Channel::DEV:
+     case version_info::Channel::BETA:
+     case version_info::Channel::STABLE:
+-      CHECK_IS_TEST();
+       [[fallthrough]];
+ #endif
+     case version_info::Channel::UNKNOWN:

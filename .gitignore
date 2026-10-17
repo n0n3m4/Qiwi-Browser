@@ -1,0 +1,9 @@
+# Allowlist: only the build inputs are tracked.
+/*
+!/.gitignore
+!/CHROMIUM_VERSION
+!/chromium-orange-theme.svg
+!/gn_args/
+!/patches/
+!/scripts/
+*.md

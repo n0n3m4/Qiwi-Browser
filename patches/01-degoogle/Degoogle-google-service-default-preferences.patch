@@ -1,0 +1,71 @@
+From 74c53d205ff475cf53333885a78f151601f622af Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 19:29:09 +0500
+Subject: [PATCH] Degoogle: Google-service default preferences (translate
+ offer, sign-in, FRE metrics)
+
+The three Google-facing defaults that cromite sets in Modify-default-preferences
+(dropped from our subset because it mixes in unrelated defaults):
+
+- translate::prefs::kOfferTranslateEnabled defaults to false. Translation is
+  already impossible in this tree (cromite's
+  ungoogled-chromium-Disable-translate-integration makes
+  TranslateManager::FilterIsTranslatePossible() refuse and removes the
+  translate settings), so this only stops the pref from claiming otherwise.
+- prefs::kSigninAllowed defaults to false: "Allow Chrome sign-in" is off and
+  the dead NTP identity button no longer invites a sign-in that cannot happen
+  without GMS.
+- The first-run flow no longer opts the user into usage/crash reporting: the
+  FRE footer loses its "Chrome sends usage and crash data to Google" sentence
+  and "Help improve Chrome's features and performance" starts off. Metrics
+  upload is compiled out anyway (Disable-various-metrics); this only stops the
+  UI from claiming the opposite.
+
+Found by the runtime UI test (testing/RUNTIME_UI.md, F3/F6).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../ui/signin/fullscreen_signin/FullscreenSigninMediator.java   | 2 +-
+ chrome/browser/ui/browser_ui_prefs.cc                           | 2 +-
+ .../signin/internal/identity_manager/primary_account_manager.cc | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/ui/android/signin/java/src/org/chromium/chrome/browser/ui/signin/fullscreen_signin/FullscreenSigninMediator.java b/chrome/browser/ui/android/signin/java/src/org/chromium/chrome/browser/ui/signin/fullscreen_signin/FullscreenSigninMediator.java
+index cbf106a690..672b062d51 100644
+--- a/chrome/browser/ui/android/signin/java/src/org/chromium/chrome/browser/ui/signin/fullscreen_signin/FullscreenSigninMediator.java
++++ b/chrome/browser/ui/android/signin/java/src/org/chromium/chrome/browser/ui/signin/fullscreen_signin/FullscreenSigninMediator.java
+@@ -324,7 +324,7 @@ public class FullscreenSigninMediator
+                             ? mForcedSigninStatusProvider.showForcedSigninScreen()
+                             : TokenHolder.INVALID_TOKEN;
+         } else {
+-            mAllowMetricsAndCrashUploading = true;
++            mAllowMetricsAndCrashUploading = false;  // degoogle: no UMA, no FRE opt-in
+             mIsSigninForcedByPolicy = false;
+         }
+ 
+diff --git a/chrome/browser/ui/browser_ui_prefs.cc b/chrome/browser/ui/browser_ui_prefs.cc
+index fa4f9fef00..7e42a4d655 100644
+--- a/chrome/browser/ui/browser_ui_prefs.cc
++++ b/chrome/browser/ui/browser_ui_prefs.cc
+@@ -145,7 +145,7 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
+   registry->RegisterBooleanPref(prefs::kWebAppCreateInAppsMenu, true);
+   registry->RegisterBooleanPref(prefs::kWebAppCreateInQuickLaunchBar, true);
+   registry->RegisterBooleanPref(
+-      translate::prefs::kOfferTranslateEnabled, true,
++      translate::prefs::kOfferTranslateEnabled, false,
+       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+   registry->RegisterDictionaryPref(prefs::kBrowserWindowPlacement);
+   registry->RegisterDictionaryPref(prefs::kBrowserWindowPlacementPopup);
+diff --git a/components/signin/internal/identity_manager/primary_account_manager.cc b/components/signin/internal/identity_manager/primary_account_manager.cc
+index 3f8997799d..95d555a4b6 100644
+--- a/components/signin/internal/identity_manager/primary_account_manager.cc
++++ b/components/signin/internal/identity_manager/primary_account_manager.cc
+@@ -391,7 +391,7 @@ void PrimaryAccountManager::RegisterProfilePrefs(PrefRegistrySimple* registry) {
+       prefs::kGoogleServicesSyncingUsernameMigratedToSignedIn, std::string());
+   registry->RegisterIntegerPref(prefs::kGoogleServicesSyncingUserMigrationType,
+                                 /*SyncToSigninMigrationType::kUnknown=*/0);
+-  registry->RegisterBooleanPref(prefs::kSigninAllowed, true);
++  registry->RegisterBooleanPref(prefs::kSigninAllowed, false);
+   registry->RegisterBooleanPref(prefs::kSignedInWithCredentialProvider, false);
+   registry->RegisterBooleanPref(prefs::kExplicitBrowserSignin, false);
+   registry->RegisterBooleanPref(

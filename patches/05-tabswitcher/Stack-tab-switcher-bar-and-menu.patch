@@ -1,0 +1,304 @@
+From 077df6295d7e6343a28d40a17102cc2ab52c4316 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 10:45:02 +0500
+Subject: [PATCH] Stack tab switcher: '+ New tab' bar and iconified overflow
+ menu (Kiwi style)
+
+Top bar: '+ New tab' control on the left (incognito-aware), overflow menu on the right, no tab
+counter/incognito toggle. Menu: New tab, New Incognito tab, Close all tabs, Settings with Material
+icons (PopupMenu.setForceShowIcon).
+---
+ chrome/android/chrome_java_resources.gni      |  1 +
+ .../res/drawable/stack_ic_settings_24dp.xml   | 17 ++++
+ .../res/layout/stack_tab_switcher_toolbar.xml | 35 ++++----
+ .../res/values/stack_tab_switcher_values.xml  |  5 ++
+ .../compositor/layouts/phone/StackLayout.java | 87 ++++++++++---------
+ 5 files changed, 83 insertions(+), 62 deletions(-)
+ create mode 100644 chrome/android/java/res/drawable/stack_ic_settings_24dp.xml
+
+diff --git a/chrome/android/chrome_java_resources.gni b/chrome/android/chrome_java_resources.gni
+index d391bdc8eb..bd39979b25 100644
+--- a/chrome/android/chrome_java_resources.gni
++++ b/chrome/android/chrome_java_resources.gni
+@@ -429,6 +429,7 @@ chrome_java_resources = [
+   "java/res/drawable/sharing_more.xml",
+   "java/res/drawable/sharing_print.xml",
+   "java/res/drawable/shopping_accessory_view_background.xml",
++  "java/res/drawable/stack_ic_settings_24dp.xml",
+   "java/res/drawable/steps_number_circle_background.xml",
+   "java/res/drawable/tab_close_button_bg_20dp.xml",
+   "java/res/drawable/tab_close_button_bg_24dp.xml",
+diff --git a/chrome/android/java/res/drawable/stack_ic_settings_24dp.xml b/chrome/android/java/res/drawable/stack_ic_settings_24dp.xml
+new file mode 100644
+index 0000000000..31f86c9ead
+--- /dev/null
++++ b/chrome/android/java/res/drawable/stack_ic_settings_24dp.xml
+@@ -0,0 +1,17 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Copyright 2026 The Chromium Authors
++     Use of this source code is governed by a BSD-style license that can be
++     found in the LICENSE file. -->
++
++<!-- Outlined Material "settings" gear for the stack tab switcher menu. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="960"
++    android:viewportHeight="960"
++    android:tint="@macro/default_icon_color">
++    <path
++        android:fillColor="@android:color/white"
++        android:fillType="evenOdd"
++        android:pathData="M370,880L354,752Q341,747 329.5,740Q318,733 307,725L188,775L78,585L181,507Q180,500 180,493.5Q180,487 180,480Q180,473 180,466.5Q180,460 181,453L78,375L188,185L307,235Q318,227 330,220Q342,213 354,208L370,80L590,80L606,208Q619,213 630.5,220Q642,227 653,235L772,185L882,375L779,453Q780,460 780,466.5Q780,473 780,480Q780,487 780,493.5Q780,500 778,507L881,585L771,775L653,725Q642,733 630,740Q618,747 606,752L590,880L370,880ZM440,800L519,800L533,694Q564,686 590.5,670.5Q617,655 639,633L738,674L777,606L691,541Q696,527 698,511.5Q700,496 700,480Q700,464 698,448.5Q696,433 691,419L777,354L738,286L639,328Q617,305 590.5,289.5Q564,274 533,266L520,160L441,160L427,266Q396,274 369.5,289.5Q343,305 321,327L222,286L183,354L269,418Q264,433 262,448Q260,463 260,480Q260,496 262,511Q264,526 269,541L183,606L222,674L321,632Q343,655 369.5,670.5Q396,686 427,694L440,800ZM482,620Q540,620 581,579Q622,538 622,480Q622,422 581,381Q540,340 482,340Q423,340 382.5,381Q342,422 342,480Q342,538 382.5,579Q423,620 482,620ZM482,560A80,80 0,1 1,482,400A80,80 0,1 1,482,560Z" />
++</vector>
+diff --git a/chrome/android/java/res/layout/stack_tab_switcher_toolbar.xml b/chrome/android/java/res/layout/stack_tab_switcher_toolbar.xml
+index 47cf6a0ae0..be0ad98a5a 100644
+--- a/chrome/android/java/res/layout/stack_tab_switcher_toolbar.xml
++++ b/chrome/android/java/res/layout/stack_tab_switcher_toolbar.xml
+@@ -15,33 +15,28 @@
+     android:layout_gravity="top"
+     android:gravity="center_vertical"
+     android:orientation="horizontal"
++    android:paddingEnd="@dimen/stack_top_bar_menu_end_padding"
+     android:clickable="true"
+     android:focusable="false">
+ 
+-    <org.chromium.ui.widget.ChromeImageButton
+-        android:id="@+id/stack_incognito_toggle"
+-        style="@style/ToolbarButton"
+-        android:layout_height="@dimen/toolbar_height_no_shadow"
+-        android:src="@drawable/ic_incognito_24dp"
+-        android:contentDescription="@string/accessibility_tab_switcher_incognito_stack"
+-        app:tint="@color/default_icon_color_tint_list" />
+-
++    <!-- "+ New tab": one clickable control; the incognito stack makes it an incognito NTP. -->
+     <TextView
+-        android:id="@+id/stack_tab_count"
++        android:id="@+id/stack_new_tab_button"
+         android:layout_width="0dp"
+-        android:layout_height="wrap_content"
++        android:layout_height="@dimen/toolbar_height_no_shadow"
+         android:layout_weight="1"
+-        android:gravity="center"
++        android:background="?attr/selectableItemBackground"
++        android:gravity="center_vertical|start"
++        android:paddingStart="@dimen/stack_top_bar_side_padding"
++        android:paddingEnd="@dimen/stack_top_bar_side_padding"
++        android:drawableStart="@drawable/new_tab_icon"
++        android:drawablePadding="@dimen/stack_top_bar_new_tab_drawable_padding"
++        android:drawableTint="@color/default_icon_color_tint_list"
++        android:text="@string/menu_new_tab"
++        android:singleLine="true"
++        android:ellipsize="end"
+         android:textAppearance="@style/TextAppearance.TextLarge.Primary"
+-        android:importantForAccessibility="no" />
+-
+-    <org.chromium.ui.widget.ChromeImageButton
+-        android:id="@+id/stack_new_tab_button"
+-        style="@style/ToolbarButton"
+-        android:layout_height="@dimen/toolbar_height_no_shadow"
+-        android:src="@drawable/new_tab_icon"
+-        android:contentDescription="@string/accessibility_toolbar_btn_new_tab"
+-        app:tint="@color/default_icon_color_tint_list" />
++        android:focusable="true" />
+ 
+     <org.chromium.ui.widget.ChromeImageButton
+         android:id="@+id/stack_menu_button"
+diff --git a/chrome/android/java/res/values/stack_tab_switcher_values.xml b/chrome/android/java/res/values/stack_tab_switcher_values.xml
+index c3addb17d3..ee7afec995 100644
+--- a/chrome/android/java/res/values/stack_tab_switcher_values.xml
++++ b/chrome/android/java/res/values/stack_tab_switcher_values.xml
+@@ -23,6 +23,11 @@
+     <dimen name="tabswitcher_border_frame_transparent_top">3dp</dimen>
+     <dimen name="tabswitcher_border_frame_transparent_side">2dp</dimen>
+ 
++    <!-- Top bar: 16dp side padding, 24dp icons, label on the 56dp keyline. -->
++    <dimen name="stack_top_bar_side_padding">16dp</dimen>
++    <dimen name="stack_top_bar_new_tab_drawable_padding">16dp</dimen>
++    <dimen name="stack_top_bar_menu_end_padding">4dp</dimen>
++
+     <!-- Kept for the stack math; the overscroll tilt itself is not rendered (cc::slim is 2D). -->
+     <integer name="over_scroll_angle">15</integer>
+ </resources>
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
+index 4d0a2ca89f..4d860fb3fe 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
+@@ -8,6 +8,7 @@ import android.content.Context;
+ import android.content.res.ColorStateList;
+ import android.view.LayoutInflater;
+ import android.view.Menu;
++import android.view.MenuItem;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.widget.FrameLayout;
+@@ -34,7 +35,6 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
+ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+ import org.chromium.components.browser_ui.styles.ChromeColors;
+ 
+-import java.text.NumberFormat;
+ import java.util.List;
+ 
+ /**
+@@ -49,6 +49,7 @@ public class StackLayout extends StackLayoutBase {
+     public static final int NORMAL_STACK_INDEX = 0;
+     public static final int INCOGNITO_STACK_INDEX = 1;
+ 
++    private static final int MENU_ID_NEW_TAB = 0;
+     private static final int MENU_ID_NEW_INCOGNITO_TAB = 1;
+     private static final int MENU_ID_CLOSE_ALL_TABS = 2;
+     private static final int MENU_ID_SETTINGS = 3;
+@@ -59,18 +60,14 @@ public class StackLayout extends StackLayoutBase {
+     /** Tells the layout manager to re-query {@link #handlesBackPress()}. */
+     private final Runnable mOnBackPressStateChanged;
+ 
+-    // Top bar (new tab, incognito toggle, tab count, overflow menu).
++    // Top bar (new tab, overflow menu).
+     private @Nullable View mTopBar;
+-    private @Nullable ImageButton mIncognitoToggle;
+-    private @Nullable TextView mTabCountView;
+-    private @Nullable ImageButton mNewTabButton;
++    private @Nullable TextView mNewTabButton;
+     private @Nullable ImageButton mMenuButton;
+     private final int mTopBarFallbackHeightPx;
+     private int mTopBarInsetTopPx;
+ 
+     // Last state pushed to the top bar / back press supplier (see refreshTopBarAndBackState()).
+-    private int mShownTabCount = -1;
+-    private int mShownIncognitoCount = -1;
+     private int mShownIncognitoSelected = -1;
+     private boolean mShownHandlesBackPress;
+ 
+@@ -233,7 +230,7 @@ public class StackLayout extends StackLayoutBase {
+ 
+     // ---------------------------------------------------------------------------------------
+     // Top bar. 153's phone toolbar has no tab switcher mode any more, so the switcher brings
+-    // its own minimal bar: incognito toggle, tab count, new tab, overflow menu.
++    // its own minimal bar like M90's: "+ New tab" on the left, overflow menu on the right.
+     // ---------------------------------------------------------------------------------------
+ 
+     @Override
+@@ -298,17 +295,9 @@ public class StackLayout extends StackLayoutBase {
+         View topBar =
+                 LayoutInflater.from(getContext())
+                         .inflate(R.layout.stack_tab_switcher_toolbar, container, false);
+-        mIncognitoToggle = topBar.findViewById(R.id.stack_incognito_toggle);
+-        mTabCountView = topBar.findViewById(R.id.stack_tab_count);
+         mNewTabButton = topBar.findViewById(R.id.stack_new_tab_button);
+         mMenuButton = topBar.findViewById(R.id.stack_menu_button);
+ 
+-        mIncognitoToggle.setOnClickListener(
+-                v -> {
+-                    if (shouldIgnoreTouchInput() || mTabModelSelector == null) return;
+-                    // Fires onCurrentTabModelChanged() -> onTabModelSwitched() -> flingStacks().
+-                    mTabModelSelector.selectModel(!mTabModelSelector.isIncognitoSelected());
+-                });
+         mNewTabButton.setOnClickListener(v -> launchNtp(isIncognitoStackShown()));
+         mMenuButton.setOnClickListener(this::showOverflowMenu);
+ 
+@@ -350,16 +339,42 @@ public class StackLayout extends StackLayoutBase {
+         if (mTabModelSelector == null) return;
+         // TODO(stack): Plain PopupMenu instead of the app menu (AppMenuCoordinator needs plumbing
+         // from RootUiCoordinator).
+-        PopupMenu popup = new PopupMenu(getContext(), anchor);
++        Context context = getContext();
++        PopupMenu popup = new PopupMenu(context, anchor);
++        popup.setForceShowIcon(true);
+         Menu menu = popup.getMenu();
+-        menu.add(Menu.NONE, MENU_ID_NEW_INCOGNITO_TAB, 0, R.string.menu_new_incognito_tab);
+-        menu.add(Menu.NONE, MENU_ID_CLOSE_ALL_TABS, 1, R.string.menu_close_all_tabs)
++        ColorStateList tint = context.getColorStateList(R.color.default_icon_color_tint_list);
++        addMenuItem(
++                menu,
++                MENU_ID_NEW_TAB,
++                R.string.menu_new_tab,
++                R.drawable.ic_add_box_rounded_corner,
++                tint);
++        addMenuItem(
++                menu,
++                MENU_ID_NEW_INCOGNITO_TAB,
++                R.string.menu_new_incognito_tab,
++                R.drawable.ic_incognito_24dp,
++                tint);
++        addMenuItem(
++                        menu,
++                        MENU_ID_CLOSE_ALL_TABS,
++                        R.string.menu_close_all_tabs,
++                        R.drawable.material_ic_close_24dp,
++                        tint)
+                 .setEnabled(mTabModelSelector.getCurrentModel().getCount() > 0);
+-        menu.add(Menu.NONE, MENU_ID_SETTINGS, 2, R.string.menu_settings);
++        addMenuItem(
++                menu,
++                MENU_ID_SETTINGS,
++                R.string.menu_settings,
++                R.drawable.stack_ic_settings_24dp,
++                tint);
+         popup.setOnMenuItemClickListener(
+                 item -> {
+                     int id = item.getItemId();
+-                    if (id == MENU_ID_NEW_INCOGNITO_TAB) {
++                    if (id == MENU_ID_NEW_TAB) {
++                        launchNtp(/* incognito= */ false);
++                    } else if (id == MENU_ID_NEW_INCOGNITO_TAB) {
+                         launchNtp(/* incognito= */ true);
+                     } else if (id == MENU_ID_CLOSE_ALL_TABS) {
+                         // The stack animates via willCloseTabs(isAllTabs=true).
+@@ -380,15 +395,18 @@ public class StackLayout extends StackLayoutBase {
+         popup.show();
+     }
+ 
++    private static MenuItem addMenuItem(
++            Menu menu, int id, int titleRes, int iconRes, ColorStateList tint) {
++        return menu.add(Menu.NONE, id, id, titleRes).setIcon(iconRes).setIconTintList(tint);
++    }
++
+     private void resetTopBarState() {
+-        mShownTabCount = -1;
+-        mShownIncognitoCount = -1;
+         mShownIncognitoSelected = -1;
+         refreshTopBarAndBackState();
+     }
+ 
+     /**
+-     * Pushes tab counts / incognito state to the top bar and back press state to the layout
++     * Pushes incognito theming to the top bar and back press state to the layout
+      * manager when they changed.
+      */
+     private void refreshTopBarAndBackState() {
+@@ -405,32 +423,17 @@ public class StackLayout extends StackLayoutBase {
+ 
+         if (mTopBar == null) return;
+         boolean incognitoSelected = mTabModelSelector.isIncognitoSelected();
+-        int tabCount = mTabModelSelector.getCurrentModel().getCount();
+-        int incognitoCount = mTabModelSelector.getModel(true).getCount();
+         int incognitoSelectedInt = incognitoSelected ? 1 : 0;
+-        if (tabCount == mShownTabCount
+-                && incognitoCount == mShownIncognitoCount
+-                && incognitoSelectedInt == mShownIncognitoSelected) {
+-            return;
+-        }
+-        mShownTabCount = tabCount;
+-        mShownIncognitoCount = incognitoCount;
++        if (incognitoSelectedInt == mShownIncognitoSelected) return;
+         mShownIncognitoSelected = incognitoSelectedInt;
+ 
+         Context context = getContext();
+         mTopBar.setBackgroundColor(
+                 ChromeColors.getPrimaryBackgroundColor(context, incognitoSelected));
+         ColorStateList tint = ChromeColors.getPrimaryIconTint(context, incognitoSelected);
+-        mIncognitoToggle.setImageTintList(tint);
+-        mNewTabButton.setImageTintList(tint);
++        mNewTabButton.setCompoundDrawableTintList(tint);
++        mNewTabButton.setTextColor(tint);
+         mMenuButton.setImageTintList(tint);
+-        mTabCountView.setTextColor(tint);
+-        mTabCountView.setText(NumberFormat.getIntegerInstance().format(tabCount));
+-
+-        // Like M90, the incognito stack (and its toggle) only exists while incognito tabs do.
+-        mIncognitoToggle.setVisibility(
+-                incognitoCount > 0 || incognitoSelected ? View.VISIBLE : View.INVISIBLE);
+-        mIncognitoToggle.setSelected(incognitoSelected);
+         mNewTabButton.setContentDescription(
+                 context.getString(
+                         incognitoSelected

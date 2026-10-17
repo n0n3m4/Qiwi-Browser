@@ -1,0 +1,23 @@
+From 7cd698cbfbd059c145d0af2d1d7e67472b30033b Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 02:37:05 +0500
+Subject: [PATCH] Point component updater at about:blank (no third-party update
+ server)
+
+---
+ components/component_updater/component_updater_url_constants.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/components/component_updater/component_updater_url_constants.cc b/components/component_updater/component_updater_url_constants.cc
+index 7a19a8a639..50112da3fa 100644
+--- a/components/component_updater/component_updater_url_constants.cc
++++ b/components/component_updater/component_updater_url_constants.cc
+@@ -15,7 +15,7 @@ namespace component_updater {
+ // The value of |kDefaultUrlSource| can be overridden with
+ // --component-updater=url-source=someurl.
+ const char kUpdaterJSONDefaultUrl[] =
+-    "https://uazo.github.io/cromite/components/query4_0.json";
++    "about:blank";
+ 
+ const char kUpdaterJSONFallbackUrl[] =
+     "about:blank";

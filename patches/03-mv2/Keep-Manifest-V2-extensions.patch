@@ -1,0 +1,25 @@
+From db6a7b05f27d504f6ed6629be358f64d1c92062d Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 09:22:14 +0500
+Subject: [PATCH] Keep Manifest V2 extensions loadable
+
+ManifestV2Handler::ShouldDisableLegacyExtensions() gates every MV2 block (startup disable,
+install/enable policy, re-enable, webstore status, management API); return false.
+---
+ extensions/browser/manifest_v2_handler.cc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/extensions/browser/manifest_v2_handler.cc b/extensions/browser/manifest_v2_handler.cc
+index 5841d3dfbc..6fa5cf2abc 100644
+--- a/extensions/browser/manifest_v2_handler.cc
++++ b/extensions/browser/manifest_v2_handler.cc
+@@ -114,7 +114,8 @@ bool ShouldDisableLegacyExtensions() {
+     return false;
+   }
+ 
+-  return true;
++  // kiwi: keep Manifest V2 extensions working.
++  return false;
+ }
+ 
+ }  // namespace

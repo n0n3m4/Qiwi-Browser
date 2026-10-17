@@ -1,0 +1,131 @@
+From 8d183862832271dca4aff0318bc979af053885bd Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 16:31:30 +0500
+Subject: [PATCH] Stack tab switcher: incognito hardening
+
+- FLAG_SECURE is set while the switcher shows and incognito tabs
+  exist, since the incognito stack peeks beside the normal one (M90
+  had the same condition). The snapshot controller now re-evaluates
+  on every layout start instead of HUB show/hide only, because the
+  stack is still the active layout when its hide begins.
+- "New Incognito tab" in the stack menu and launchNtp(true) honour
+  IncognitoModeAvailability (IncognitoUtils.isIncognitoModeEnabled).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../compositor/layouts/phone/StackLayout.java | 25 +++++++++++-----
+ .../IncognitoTabbedSnapshotController.java    | 30 ++++++++-----------
+ 2 files changed, 30 insertions(+), 25 deletions(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
+index ecec65020f..7fff4bf553 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
+@@ -26,6 +26,8 @@ import org.chromium.chrome.R;
+ import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+ import org.chromium.chrome.browser.compositor.layouts.LayoutRenderHost;
+ import org.chromium.chrome.browser.compositor.layouts.LayoutUpdateHost;
++import org.chromium.chrome.browser.incognito.IncognitoUtils;
++import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
+ import org.chromium.chrome.browser.tab.Tab;
+ import org.chromium.chrome.browser.tab.TabLaunchType;
+@@ -327,14 +329,19 @@ public class StackLayout extends StackLayoutBase {
+ 
+     private void launchNtp(boolean incognito) {
+         if (shouldIgnoreTouchInput() || mTabModelSelector == null) return;
+-        // TODO(stack): Respect incognito availability (policy / IncognitoUtils) before offering
+-        // incognito tabs.
++        if (incognito && !isIncognitoEnabled()) return;
+         mTabModelSelector
+                 .getTabCreatorManager()
+                 .getTabCreator(incognito)
+                 .launchNtp(TabLaunchType.FROM_TAB_SWITCHER_UI);
+     }
+ 
++    /** Honors IncognitoModeAvailability policy / parental controls. */
++    private boolean isIncognitoEnabled() {
++        Profile profile = mTabModelSelector.getCurrentModel().getProfile();
++        return profile != null && IncognitoUtils.isIncognitoModeEnabled(profile);
++    }
++
+     private void showOverflowMenu(View anchor) {
+         if (mTabModelSelector == null) return;
+         // TODO(stack): Plain PopupMenu instead of the app menu (AppMenuCoordinator needs plumbing
+@@ -350,12 +357,14 @@ public class StackLayout extends StackLayoutBase {
+                 R.string.menu_new_tab,
+                 R.drawable.ic_add_box_rounded_corner,
+                 tint);
+-        addMenuItem(
+-                menu,
+-                MENU_ID_NEW_INCOGNITO_TAB,
+-                R.string.menu_new_incognito_tab,
+-                R.drawable.ic_incognito_24dp,
+-                tint);
++        if (isIncognitoEnabled()) {
++            addMenuItem(
++                    menu,
++                    MENU_ID_NEW_INCOGNITO_TAB,
++                    R.string.menu_new_incognito_tab,
++                    R.drawable.ic_incognito_24dp,
++                    tint);
++        }
+         addMenuItem(
+                         menu,
+                         MENU_ID_CLOSE_ALL_TABS,
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoTabbedSnapshotController.java b/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoTabbedSnapshotController.java
+index cfd2cd05be..f9b1902359 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoTabbedSnapshotController.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoTabbedSnapshotController.java
+@@ -11,7 +11,6 @@ import androidx.annotation.VisibleForTesting;
+ import org.chromium.base.Callback;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.chrome.browser.compositor.layouts.LayoutManagerChrome;
+-import org.chromium.chrome.browser.layouts.FilterLayoutStateObserver;
+ import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserver;
+ import org.chromium.chrome.browser.layouts.LayoutType;
+ import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
+@@ -74,7 +73,11 @@ public class IncognitoTabbedSnapshotController extends IncognitoSnapshotControll
+     static Supplier<Boolean> getIsShowingIncognitoSupplier(
+             TabModelSelector tabModelSelector, Supplier<Boolean> isInOverviewModeSupplier) {
+         return () -> {
+-            return tabModelSelector.getCurrentModel().isIncognito();
++            // The classic stack switcher draws the incognito stack beside the normal one, so
++            // cover it whenever the switcher is up and incognito tabs exist.
++            return tabModelSelector.getCurrentModel().isIncognito()
++                    || (isInOverviewModeSupplier.get()
++                            && tabModelSelector.getModel(true).getCount() > 0);
+         };
+     }
+ 
+@@ -101,22 +104,15 @@ public class IncognitoTabbedSnapshotController extends IncognitoSnapshotControll
+         mTabModelSelector = tabModelSelector;
+         mActivityLifecycleDispatcher = activityLifecycleDispatcher;
+ 
++        // Not filtered to HUB: the supplier depends on the active layout, which only stops being
++        // HUB once the next layout (e.g. BROWSING) starts showing.
+         mLayoutStateObserver =
+-                new FilterLayoutStateObserver(
+-                        LayoutType.HUB,
+-                        new LayoutStateObserver() {
+-                            @Override
+-                            public void onStartedShowing(int layoutType) {
+-                                assert layoutType == LayoutType.HUB;
+-                                updateIncognitoTabSnapshotState();
+-                            }
+-
+-                            @Override
+-                            public void onStartedHiding(int layoutType) {
+-                                assert layoutType == LayoutType.HUB;
+-                                updateIncognitoTabSnapshotState();
+-                            }
+-                        });
++                new LayoutStateObserver() {
++                    @Override
++                    public void onStartedShowing(int layoutType) {
++                        updateIncognitoTabSnapshotState();
++                    }
++                };
+ 
+         mLayoutManager.addObserver(mLayoutStateObserver);
+         mCurrentTabModelObserver = (tabModel) -> updateIncognitoTabSnapshotState();

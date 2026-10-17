@@ -1,0 +1,644 @@
+From dba58f1ebe8e836f457ad3492d206c8a4f7946b4 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 09:22:13 +0500
+Subject: [PATCH] Enable Chrome extensions in the Android phone build
+
+Compile upstream's desktop-android extensions runtime (enable_desktop_android_extensions)
+into chrome_public_apk: widen gn/grd gates that were is_desktop_android-only, map the
+IS_DESKTOP_ANDROID C++ sites to IS_ANDROID, register the color-change WebUI binder,
+add the extensions toolbar stub to the phone toolbar, fall back to chrome://extensions
+when there is no toolbar coordinator, give extension actions a fixed width budget on
+phones, auto-reload killed background pages, allow off-store .crx installs from a tab
+(permission prompt kept), enable ChromeNativeUrlOverriding.
+---
+ chrome/android/BUILD.gn                       |  2 +-
+ .../chrome/browser/ChromeTabbedActivity.java  | 13 ++++++++++-
+ .../browser/toolbar/ToolbarManager.java       |  3 ++-
+ chrome/app/theme/theme_resources.grd          |  4 ++--
+ .../chrome_browser_interface_binders_webui.cc | 16 +++++++++----
+ .../chrome_download_manager_delegate.cc       |  7 +++++-
+ chrome/browser/extensions/BUILD.gn            |  6 ++++-
+ .../browser/extensions/extension_service.cc   | 20 ++++++++++++++++
+ .../flags/android/chrome_feature_list.cc      |  3 ++-
+ .../browser/flags/ChromeFeatureList.java      |  2 +-
+ chrome/browser/media/router/BUILD.gn          |  3 ++-
+ chrome/browser/ui/BUILD.gn                    |  3 ++-
+ .../extensions/windowing/internal/BUILD.gn    |  3 ++-
+ .../toolbar/java/res/layout/toolbar_phone.xml |  8 +++++++
+ .../browser/toolbar/top/ToolbarPhone.java     | 23 +++++++++++++++++++
+ .../browser/ui/omnibox/omnibox_edit_model.cc  |  5 ++++
+ .../searchbox/searchbox_handler.cc            |  6 +++++
+ .../api/web_request/permission_helper.cc      |  2 +-
+ extensions/buildflags/buildflags.gni          |  3 ++-
+ extensions/common/command.cc                  |  2 +-
+ .../renderer/bindings/api_binding_util.cc     |  2 +-
+ ui/resources/BUILD.gn                         |  5 +++-
+ ui/resources/ui_resources.grd                 |  2 +-
+ ui/webui/BUILD.gn                             |  3 ++-
+ ui/webui/resources/BUILD.gn                   | 14 +++++++++++
+ .../color_change_listener/BUILD.gn            |  3 ++-
+ .../cr_components/cr_shortcut_input/BUILD.gn  |  3 ++-
+ .../cr_components/managed_footnote/BUILD.gn   |  3 ++-
+ ui/webui/resources/css/BUILD.gn               |  2 +-
+ 29 files changed, 143 insertions(+), 28 deletions(-)
+
+diff --git a/chrome/android/BUILD.gn b/chrome/android/BUILD.gn
+index 4ff4217160..a884983e24 100644
+--- a/chrome/android/BUILD.gn
++++ b/chrome/android/BUILD.gn
+@@ -1027,7 +1027,7 @@ if (_is_default_toolchain) {
+       "//chrome/browser/password_entry_edit/android/internal:java",
+     ]
+ 
+-    if (is_desktop_android) {
++    if (enable_desktop_android_extensions) {  # kiwi
+       deps +=
+           [ "//chrome/browser/ui/android/extensions/windowing/internal:java" ]
+     } else {
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+index 09fd255d5a..2041568299 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+@@ -4503,7 +4503,18 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+         } else if (id == R.id.extensions_menu_menu_id) {
+             ExtensionsToolbarCoordinator coordinator =
+                     getToolbarManager().getExtensionsToolbarCoordinator();
+-            coordinator.showExtensionsMenu();
++            if (coordinator != null) {
++                coordinator.showExtensionsMenu();
++            } else {
++                // kiwi: no extensions toolbar (e.g. no stub in layout); open the manager page.
++                getTabCreator(/* incognito= */ false)
++                        .createNewTab(
++                                new LoadUrlParams(
++                                        UrlConstants.CHROME_EXTENSIONS_URL,
++                                        PageTransition.AUTO_TOPLEVEL),
++                                TabLaunchType.FROM_CHROME_UI,
++                                getCurrentTabModel().isIncognito() ? null : currentTab);
++            }
+             RecordUserAction.record("MobileMenuExtensionsMenu");
+         } else if (id == R.id.manage_extensions_menu_id) {
+             LoadUrlParams params =
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java b/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
+index c1a211b92b..81dd1ade18 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
+@@ -2686,7 +2686,8 @@ public class ToolbarManager
+                                                         mActivityTabProvider.asObservable(),
+                                                         mTabCreatorManager.getTabCreator(false),
+                                                         getBrowsingModeThemeColorProvider(),
+-                                                        (ToolbarTablet) mToolbarLayout,
++                                                        // kiwi: phone toolbar too.
++                                                        (ViewGroup) mToolbarLayout,
+                                                         contextMenuPopulatorFactory,
+                                                         selectionDropdownMenuDelegate,
+                                                         mTabModelSelector,
+diff --git a/chrome/app/theme/theme_resources.grd b/chrome/app/theme/theme_resources.grd
+index 2ec9d84dd3..5e01da34ea 100644
+--- a/chrome/app/theme/theme_resources.grd
++++ b/chrome/app/theme/theme_resources.grd
+@@ -415,7 +415,7 @@
+         <structure type="chrome_scaled_image" name="IDR_UPLOAD_VIOLATION_DARK" file="common/upload_violation_dark.png" />
+       </if>
+       <if expr="not _google_chrome">
+-        <if expr="not is_android or is_desktop_android">
++        <if expr="not is_android or is_desktop_android or enable_extensions_core">
+           <!-- Desktop Android supports extensions and the web store. -->
+           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON" file="chromium/webstore_icon.png" />
+           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON_16" file="chromium/webstore_icon_16.png" />
+@@ -424,7 +424,7 @@
+         </if>
+       </if>
+       <if expr="_google_chrome">
+-        <if expr="not is_android or is_desktop_android">
++        <if expr="not is_android or is_desktop_android or enable_extensions_core">
+           <!-- Desktop Android supports extensions and the web store. -->
+           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON" file="google_chrome/webstore_icon.png" />
+           <structure type="chrome_scaled_image" name="IDR_WEBSTORE_ICON_16" file="google_chrome/webstore_icon_16.png" />
+diff --git a/chrome/browser/chrome_browser_interface_binders_webui.cc b/chrome/browser/chrome_browser_interface_binders_webui.cc
+index 8bc1daffbf..d494d27e2a 100644
+--- a/chrome/browser/chrome_browser_interface_binders_webui.cc
++++ b/chrome/browser/chrome_browser_interface_binders_webui.cc
+@@ -47,6 +47,7 @@
+ #include "components/site_engagement/core/mojom/site_engagement_details.mojom.h"
+ #include "content/public/browser/web_ui_browser_interface_broker_registry.h"
+ #include "content/public/browser/web_ui_controller_interface_binder.h"
++#include "extensions/buildflags/buildflags.h"
+ #include "mojo/public/cpp/bindings/binder_map.h"
+ #include "mojo/public/cpp/bindings/message.h"
+ #include "ui/webui/buildflags.h"
+@@ -92,7 +93,8 @@
+ #include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
+ #endif
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID) || \
++    BUILDFLAG(ENABLE_EXTENSIONS_CORE)  // kiwi: chrome://extensions on phones
+ #include "ui/webui/color_change_listener/color_change_handler.h"
+ #include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
+ #endif  // !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
+@@ -114,7 +116,8 @@ namespace chrome::internal {
+ using content::RegisterWebUIControllerInterfaceBinder;
+ 
+ namespace {
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID) || \
++    BUILDFLAG(ENABLE_EXTENSIONS_CORE)  // kiwi: chrome://extensions on phones
+ void BindColorChangeListener(
+     content::RenderFrameHost* frame_host,
+     mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
+@@ -307,7 +310,8 @@ void PopulateChromeWebUIFrameBindersPartsAllPlatforms(
+   }
+ #endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID) || \
++    BUILDFLAG(ENABLE_EXTENSIONS_CORE)  // kiwi: chrome://extensions on phones
+   map->Add<color_change_listener::mojom::PageHandler>(
+       base::BindRepeating(&BindColorChangeListener));
+ #endif  // !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
+@@ -409,7 +413,8 @@ void PopulateTrustedChromeWebUIFrameInterfaceBrokers(
+   PopulateChromeWebUIFrameInterfaceBrokersTrustedPartsDesktop(registry);
+ #endif  // !BUILDFLAG(IS_ANDROID)
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID) || \
++    BUILDFLAG(ENABLE_EXTENSIONS_CORE)  // kiwi: chrome://extensions on phones
+   registry.AddGlobal<color_change_listener::mojom::PageHandler>(
+       base::BindRepeating(&BindColorChangeListener));
+ #endif  // !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
+@@ -433,7 +438,8 @@ void PopulateUntrustedChromeWebUIFrameInterfaceBrokers(
+   PopulateChromeWebUIFrameInterfaceBrokersUntrustedPartsDesktop(registry);
+ #endif  // !BUILDFLAG(IS_ANDROID)
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID) || \
++    BUILDFLAG(ENABLE_EXTENSIONS_CORE)  // kiwi: chrome://extensions on phones
+   registry.AddGlobal<color_change_listener::mojom::PageHandler>(
+       base::BindRepeating(&BindColorChangeListener));
+ #endif  // !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
+diff --git a/chrome/browser/download/chrome_download_manager_delegate.cc b/chrome/browser/download/chrome_download_manager_delegate.cc
+index 66c1e4a132..d8a94be903 100644
+--- a/chrome/browser/download/chrome_download_manager_delegate.cc
++++ b/chrome/browser/download/chrome_download_manager_delegate.cc
+@@ -1118,7 +1118,12 @@ bool ChromeDownloadManagerDelegate::ShouldOpenDownload(
+     scoped_refptr<CrxInstaller> installer(
+         download_crx_util::CreateCrxInstaller(profile_, *item));
+ 
+-    if (download_crx_util::OffStoreInstallAllowedByPrefs(profile_, *item)) {
++    // kiwi: allow off-store .crx installs from any site on Android. Only when
++    // the download has a tab: then CreateCrxInstaller() made a prompt, and
++    // CrxInstaller would install silently without one.
++    if ((BUILDFLAG(IS_ANDROID) &&
++         content::DownloadItemUtils::GetWebContents(item)) ||
++        download_crx_util::OffStoreInstallAllowedByPrefs(profile_, *item)) {
+       installer->set_off_store_install_allow_reason(
+           CrxInstaller::OffStoreInstallAllowedBecausePref);
+     }
+diff --git a/chrome/browser/extensions/BUILD.gn b/chrome/browser/extensions/BUILD.gn
+index f61b8d6447..7a10d0f28f 100644
+--- a/chrome/browser/extensions/BUILD.gn
++++ b/chrome/browser/extensions/BUILD.gn
+@@ -2505,7 +2505,6 @@ source_set("browser_tests") {
+     "//chrome/browser/glic",
+     "//chrome/browser/glic/test_support",
+     "//chrome/browser/lifetime:termination_notification",
+-    "//chrome/browser/new_tab_page",
+     "//chrome/browser/permissions",
+     "//chrome/browser/policy:test_support",
+     "//chrome/browser/prefetch",
+@@ -2577,6 +2576,11 @@ source_set("browser_tests") {
+     "//ui/webui:buildflags",
+     "//ui/webui:test_support",
+   ]
++
++  # kiwi: phone builds with extensions have no WebUI NTP.
++  if (enable_webui_ntp) {
++    deps += [ "//chrome/browser/new_tab_page" ]
++  }
+   if (enable_extensions) {
+     deps += [ "//chrome/browser/ui/views/supervised_user" ]
+   }
+diff --git a/chrome/browser/extensions/extension_service.cc b/chrome/browser/extensions/extension_service.cc
+index cd4868e755..370381c794 100644
+--- a/chrome/browser/extensions/extension_service.cc
++++ b/chrome/browser/extensions/extension_service.cc
+@@ -8,6 +8,7 @@
+ 
+ #include <algorithm>
+ #include <iterator>
++#include <map>
+ #include <memory>
+ #include <optional>
+ #include <set>
+@@ -30,6 +31,7 @@
+ #include "base/strings/stringprintf.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/syslog_logging.h"
++#include "base/no_destructor.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/threading/thread_restrictions.h"
+ #include "base/time/time.h"
+@@ -819,6 +821,24 @@ void ExtensionService::OnExtensionHostRenderProcessGone(
+       FROM_HERE, base::BindOnce(&ExtensionRegistrar::TerminateExtension,
+                                 extension_registrar_->GetWeakPtr(),
+                                 extension_host->extension_id()));
++
++#if BUILDFLAG(IS_ANDROID)
++  // kiwi: Android has no crash bubble to revive a killed background page (the
++  // OS kills renderers under memory pressure), so reload it after a short
++  // delay.
++  // ponytail: per-session retry cap shared by all profiles; reset per id on
++  // success if crash loops after long uptimes matter.
++  static base::NoDestructor<std::map<ExtensionId, int>> reload_counts;
++  constexpr int kMaxAutoReloads = 5;
++  if (++(*reload_counts)[extension_host->extension_id()] <= kMaxAutoReloads) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(&ExtensionRegistrar::ReloadExtensionWithQuietFailure,
++                       extension_registrar_->GetWeakPtr(),
++                       extension_host->extension_id()),
++        base::Seconds(2));
++  }
++#endif
+ }
+ 
+ void ExtensionService::OnRenderProcessHostCreated(
+diff --git a/chrome/browser/flags/android/chrome_feature_list.cc b/chrome/browser/flags/android/chrome_feature_list.cc
+index 64ea70c9aa..df7c53ad73 100644
+--- a/chrome/browser/flags/android/chrome_feature_list.cc
++++ b/chrome/browser/flags/android/chrome_feature_list.cc
+@@ -741,7 +741,8 @@ BASE_FEATURE(kCacheIsMultiInstanceApi31Enabled, base::FEATURE_ENABLED_BY_DEFAULT
+ BASE_FEATURE(kCastDeviceFilter, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kCctTabResumption, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kChangeUnfocusedPriority, base::FEATURE_DISABLED_BY_DEFAULT);
+-BASE_FEATURE(kChromeNativeUrlOverriding, base::FEATURE_DISABLED_BY_DEFAULT);
++// kiwi: let extensions override native pages (NTP, history, ...).
++BASE_FEATURE(kChromeNativeUrlOverriding, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kChromeSurveyNextAndroid, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kClampAutomotiveScaling, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kClankGlicContextMenu, base::FEATURE_DISABLED_BY_DEFAULT);
+diff --git a/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java b/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
+index 2034196f39..7626f8e5d1 100644
+--- a/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
++++ b/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
+@@ -1057,7 +1057,7 @@ public abstract class ChromeFeatureList {
+     public static final CachedFlag sCctTabSwitcherEnabledForEmbedderExperiment =
+             newCachedFlag(CCT_TAB_SWITCHER_ENABLED_FOR_EMBEDDER_EXPERIMENT, true);
+     public static final CachedFlag sChromeNativeUrlOverriding =
+-            newCachedFlag(CHROME_NATIVE_URL_OVERRIDING, BuildConfig.IS_DESKTOP_ANDROID);
++            newCachedFlag(CHROME_NATIVE_URL_OVERRIDING, true); // kiwi
+     public static final CachedFlag sClampAutomotiveScaling =
+             newCachedFlag(CLAMP_AUTOMOTIVE_SCALING, true);
+     public static final CachedFlag sClankStartupLatencyInjection =
+diff --git a/chrome/browser/media/router/BUILD.gn b/chrome/browser/media/router/BUILD.gn
+index 714cf75813..89dff40d44 100644
+--- a/chrome/browser/media/router/BUILD.gn
++++ b/chrome/browser/media/router/BUILD.gn
+@@ -434,7 +434,8 @@ source_set("unittests") {
+   }
+ 
+   # Traditional desktop platforms and desktop android with extensions support.
+-  if (!is_android || enable_desktop_android_extensions) {
++  # kiwi: discovery asserts desktop android; phone extensions builds skip it.
++  if (!is_android || is_desktop_android) {
+     deps += [ "//chrome/browser/media/router/discovery:test_support" ]
+   }
+ 
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+index 9d54d16887..805507531d 100644
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -879,7 +879,8 @@ static_library("ui") {
+   ]
+ 
+   # Desktop-Android-only dependencies.
+-  if (is_desktop_android) {
++  # kiwi: extension windowing on phone builds too.
++  if (enable_desktop_android_extensions) {
+     deps += [ "//chrome/browser/ui/android/extensions/windowing/internal" ]
+   }
+ 
+diff --git a/chrome/browser/ui/android/extensions/windowing/internal/BUILD.gn b/chrome/browser/ui/android/extensions/windowing/internal/BUILD.gn
+index 93e62ab112..76edf5b4b3 100644
+--- a/chrome/browser/ui/android/extensions/windowing/internal/BUILD.gn
++++ b/chrome/browser/ui/android/extensions/windowing/internal/BUILD.gn
+@@ -4,9 +4,10 @@
+ 
+ import("//build/config/android/rules.gni")
+ import("//build/config/chrome_build.gni")
++import("//extensions/buildflags/buildflags.gni")
+ import("//third_party/jni_zero/jni_zero.gni")
+ 
+-assert(is_desktop_android)
++assert(enable_desktop_android_extensions)  # kiwi
+ 
+ source_set("internal") {
+   sources = [
+diff --git a/chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml b/chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml
+index 9e1f21d5a0..f6531eaa6c 100644
+--- a/chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml
++++ b/chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml
+@@ -74,6 +74,14 @@ found in the LICENSE file.
+             android:layout_height="match_parent"
+             android:visibility="gone"/>
+ 
++        <!-- kiwi: extensions toolbar on phones. -->
++        <ViewStub
++            android:id="@+id/extensions_toolbar_container_stub"
++            android:inflatedId="@+id/extensions_toolbar_container"
++            android:layout_width="wrap_content"
++            android:layout_height="?attr/toolbarButtonHeight"
++            android:layout_marginVertical="?attr/toolbarButtonMarginVertical"/>
++
+         <org.chromium.chrome.browser.toolbar.top.ToggleTabStackButton
+             android:id="@+id/tab_switcher_button"
+             style="@style/ToolbarHoverableButton"
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
+index db4a1c7bf9..89c5897bfd 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
+@@ -88,6 +88,7 @@ import org.chromium.chrome.browser.toolbar.ToolbarProgressBar;
+ import org.chromium.chrome.browser.toolbar.ToolbarTabController;
+ import org.chromium.chrome.browser.toolbar.ToolbarVariationUtils;
+ import org.chromium.chrome.browser.toolbar.back_button.BackButtonCoordinator;
++import org.chromium.chrome.browser.toolbar.extensions.ExtensionsToolbarCoordinator;
+ import org.chromium.chrome.browser.toolbar.forward_button.ForwardButtonCoordinator;
+ import org.chromium.chrome.browser.toolbar.home_button.HomeButtonCoordinator;
+ import org.chromium.chrome.browser.toolbar.menu_button.MenuButtonCoordinator;
+@@ -200,6 +201,7 @@ public class ToolbarPhone extends ToolbarLayout
+     private @Nullable AnimatorSet mUrlFocusLayoutAnimator;
+ 
+     protected boolean mDisableLocationBarRelayout;
++    private @Nullable ExtensionsToolbarCoordinator mExtensionsToolbarCoordinator;
+     protected boolean mLayoutLocationBarInFocusedMode;
+     private boolean mLastUrlFocusOnNtp;
+     private boolean mLayoutLocationBarWithoutExtraButton;
+@@ -694,6 +696,26 @@ public class ToolbarPhone extends ToolbarLayout
+         return super.onTouchEvent(ev);
+     }
+ 
++    @Override
++    public void setExtensionsToolbarCoordinator(
++            @Nullable ExtensionsToolbarCoordinator extensionsToolbarCoordinator) {
++        mExtensionsToolbarCoordinator = extensionsToolbarCoordinator;
++        requestLayout();
++    }
++
++    // kiwi: phones have no toolbar width ranking (see ToolbarTablet). Give extensions a fixed
++    // budget so a popup can anchor to its (popped out) action and one action can be pinned.
++    // ponytail: fixed two-slot budget; rank against the omnibox like ToolbarTablet if needed.
++    private void allocateExtensionsWidth() {
++        if (mExtensionsToolbarCoordinator == null) return;
++        int budget = Math.round(2 * 48 * getResources().getDisplayMetrics().density);
++        budget -=
++                mExtensionsToolbarCoordinator
++                        .getPoppedOutActionWidthConsumer()
++                        .updateVisibility(budget);
++        mExtensionsToolbarCoordinator.getActionListWidthConsumer().updateVisibility(budget);
++    }
++
+     @Override
+     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+         // In case the call came from the handler after we destroyed the dependencies, skip the work
+@@ -702,6 +724,7 @@ public class ToolbarPhone extends ToolbarLayout
+             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+             return;
+         }
++        allocateExtensionsWidth();
+         if (!mDisableLocationBarRelayout) {
+             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+ 
+diff --git a/chrome/browser/ui/omnibox/omnibox_edit_model.cc b/chrome/browser/ui/omnibox/omnibox_edit_model.cc
+index 358f0d7520..c598d2157d 100644
+--- a/chrome/browser/ui/omnibox/omnibox_edit_model.cc
++++ b/chrome/browser/ui/omnibox/omnibox_edit_model.cc
+@@ -1949,8 +1949,13 @@ gfx::Image OmniboxEditModel::GetMatchIcon(const AutocompleteMatch& match,
+     }
+   }
+ 
++#if defined(SUPPORT_PEDALS_VECTOR_ICONS)
+   bool is_starred_match = IsStarredMatch(match);
+   const auto& vector_icon_type = match.GetVectorIcon(is_starred_match, turl);
++#else
++  // kiwi: no omnibox vector icons on Android without VR.
++  const auto& vector_icon_type = gfx::VectorIcon::EmptyIcon();
++#endif
+ 
+   return controller_->client()->GetSizedIcon(vector_icon_type,
+                                              vector_icon_color);
+diff --git a/chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.cc b/chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.cc
+index c7559e1436..8c2500e0da 100644
+--- a/chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.cc
++++ b/chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.cc
+@@ -54,6 +54,7 @@
+ #include "components/omnibox/browser/aim_eligibility_service_features.h"
+ #include "components/omnibox/browser/autocomplete_classifier.h"
+ #include "components/omnibox/browser/autocomplete_controller_emitter.h"
++#include "components/omnibox/browser/actions/omnibox_action.h"
+ #include "components/omnibox/browser/autocomplete_match.h"
+ #include "components/omnibox/browser/autocomplete_result.h"
+ #include "components/omnibox/browser/contextual_search_provider.h"
+@@ -919,6 +920,8 @@ SearchboxHandler::CreateAutocompleteMatch(
+   mojom_match->destination_url = match.destination_url;
+   mojom_match->suggestion_group_id =
+       match.suggestion_group_id.value_or(omnibox::GROUP_INVALID);
++  // kiwi: no omnibox vector icons on Android without VR.
++#if defined(SUPPORT_PEDALS_VECTOR_ICONS)
+   const bool is_bookmarked =
+       bookmark_model->IsBookmarked(match.destination_url);
+   // For starter pack suggestions, use template url to generate proper vector
+@@ -929,6 +932,7 @@ SearchboxHandler::CreateAutocompleteMatch(
+           : turl_service->GetTemplateURLForKeyword(match.associated_keyword);
+   mojom_match->icon_path = AutocompleteIconToResourceName(
+       match.GetVectorIcon(is_bookmarked, associated_keyword_turl));
++#endif
+   // For enterprise search aggregator people suggestions, use branded icon if
+   // branded build.
+   if (match.enterprise_search_aggregator_type ==
+@@ -1007,7 +1011,9 @@ SearchboxHandler::CreateAutocompleteMatch(
+ #endif
+       std::string icon_path;
+       if (action->GetIconImage().IsEmpty()) {
++#if defined(SUPPORT_PEDALS_VECTOR_ICONS)
+         icon_path = AutocompleteIconToResourceName(action->GetVectorIcon());
++#endif
+       } else {
+         icon_path = webui::GetBitmapDataUrl(action->GetIconImage().AsBitmap());
+       }
+diff --git a/extensions/browser/api/web_request/permission_helper.cc b/extensions/browser/api/web_request/permission_helper.cc
+index 46c329f4a7..4f2bbdf4f0 100644
+--- a/extensions/browser/api/web_request/permission_helper.cc
++++ b/extensions/browser/api/web_request/permission_helper.cc
+@@ -64,7 +64,7 @@ void BrowserContextKeyedAPIFactory<
+   // implicitly depends upon those.
+   ExtensionsAPIClient* extensions_api_client = ExtensionsAPIClient::Get();
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID)  // kiwi: phone builds have the same startup order
+   // TODO(https://crbug.com/356905053): On Android, the startup and
+   // initialization flow is different.
+   // ExtensionsAPIClient is instantiated as part of the ExtensionsBrowserClient,
+diff --git a/extensions/buildflags/buildflags.gni b/extensions/buildflags/buildflags.gni
+index 66a2fa71d6..6a179c8c27 100644
+--- a/extensions/buildflags/buildflags.gni
++++ b/extensions/buildflags/buildflags.gni
+@@ -27,7 +27,8 @@ declare_args() {
+   #
+   # TODO(https://crbug.com/356905053): Continue expanding the scope of
+   # enable_desktop_android_extensions.
+-  enable_desktop_android_extensions = is_desktop_android
++  # kiwi: also enable the lightweight extensions runtime on phone builds.
++  enable_desktop_android_extensions = is_android
+ }
+ 
+ # Note: GN forbids relying on args from the same declare_args() block, so we
+diff --git a/extensions/common/command.cc b/extensions/common/command.cc
+index 80bfe1714f..2963b6b874 100644
+--- a/extensions/common/command.cc
++++ b/extensions/common/command.cc
+@@ -119,7 +119,7 @@ std::string Command::CommandPlatform() {
+   return ui::kKeybindingPlatformChromeOs;
+ #elif BUILDFLAG(IS_LINUX)
+   return ui::kKeybindingPlatformLinux;
+-#elif BUILDFLAG(IS_DESKTOP_ANDROID)
++#elif BUILDFLAG(IS_ANDROID)  // kiwi: phone builds too
+   // For now, we use linux keybindings on desktop android.
+   return ui::kKeybindingPlatformLinux;
+ #else
+diff --git a/extensions/renderer/bindings/api_binding_util.cc b/extensions/renderer/bindings/api_binding_util.cc
+index 8ce0b539c8..1149b8d933 100644
+--- a/extensions/renderer/bindings/api_binding_util.cc
++++ b/extensions/renderer/bindings/api_binding_util.cc
+@@ -148,7 +148,7 @@ std::string_view GetPlatformString() {
+   return "mac";
+ #elif BUILDFLAG(IS_WIN)
+   return "win";
+-#elif BUILDFLAG(IS_DESKTOP_ANDROID)
++#elif BUILDFLAG(IS_ANDROID)  // kiwi: phone builds too
+   return "desktop_android";
+ #else
+   NOTREACHED();
+diff --git a/ui/resources/BUILD.gn b/ui/resources/BUILD.gn
+index 655428da28..2b42d23f81 100644
+--- a/ui/resources/BUILD.gn
++++ b/ui/resources/BUILD.gn
+@@ -16,7 +16,10 @@ group("resources") {
+ 
+ grit("ui_resources_grd") {
+   source = "ui_resources.grd"
+-  defines = [ "enable_webui_ntp=$enable_webui_ntp" ]
++  defines = [
++    "enable_webui_ntp=$enable_webui_ntp",
++    "enable_extensions_core=$enable_extensions_core",  # kiwi
++  ]
+   outputs = [
+     "grit/ui_resources.h",
+     "grit/ui_resources_map.cc",
+diff --git a/ui/resources/ui_resources.grd b/ui/resources/ui_resources.grd
+index 120ebdc3b6..8e7ed9bdde 100644
+--- a/ui/resources/ui_resources.grd
++++ b/ui/resources/ui_resources.grd
+@@ -28,7 +28,7 @@
+       </if>
+       <structure type="chrome_scaled_image" name="IDR_DEFAULT_FAVICON" file="common/default_favicon.png" />
+       <structure type="chrome_scaled_image" name="IDR_DEFAULT_FAVICON_DARK" file="common/default_favicon_dark.png" />
+-      <if expr="not is_android or is_desktop_android or enable_webui_ntp">
++      <if expr="not is_android or is_desktop_android or enable_webui_ntp or enable_extensions_core">
+         <structure type="chrome_scaled_image" name="IDR_DEFAULT_FAVICON_32" file="common/default_favicon_32.png" />
+         <structure type="chrome_scaled_image" name="IDR_DEFAULT_FAVICON_DARK_32" file="common/default_favicon_dark_32.png" />
+         <structure type="chrome_scaled_image" name="IDR_DEFAULT_FAVICON_64" file="common/default_favicon_64.png" />
+diff --git a/ui/webui/BUILD.gn b/ui/webui/BUILD.gn
+index 38910fd023..c3671ed25b 100644
+--- a/ui/webui/BUILD.gn
++++ b/ui/webui/BUILD.gn
+@@ -38,7 +38,8 @@ if (use_blink) {
+       "//ui/webui/resources/js/metrics_reporter:mojo_bindings",
+     ]
+ 
+-    if ((!is_android && !is_ios) || is_desktop_android) {
++    if ((!is_android && !is_ios) || is_desktop_android ||
++        enable_extensions_core) {  # kiwi: chrome://extensions on phones
+       public_deps +=
+           [ "//ui/webui/resources/cr_components/color_change_listener:mojom" ]
+       sources += [
+diff --git a/ui/webui/resources/BUILD.gn b/ui/webui/resources/BUILD.gn
+index e395a144cb..39b4e04206 100644
+--- a/ui/webui/resources/BUILD.gn
++++ b/ui/webui/resources/BUILD.gn
+@@ -90,6 +90,20 @@ generate_grd("build_grd") {
+     ]
+   }
+ 
++  # kiwi: chrome://extensions on phone builds needs these components.
++  if (is_android && !is_desktop_android && enable_extensions_core) {
++    public_deps += [
++      "cr_components/color_change_listener:build_grdp",
++      "cr_components/cr_shortcut_input:build_grdp",
++      "cr_components/managed_footnote:build_grdp",
++    ]
++    grdp_files += [
++      "$root_gen_dir/ui/webui/resources/cr_components/color_change_listener/resources.grdp",
++      "$target_gen_dir/cr_components/cr_shortcut_input/resources.grdp",
++      "$target_gen_dir/cr_components/managed_footnote/resources.grdp",
++    ]
++  }
++
+   if (!is_ios) {
+     # TODO(crbug.com/527601593): Revert by moving these components back into the
+     # main desktop block at L53 if we disable composebox on Android phones.
+diff --git a/ui/webui/resources/cr_components/color_change_listener/BUILD.gn b/ui/webui/resources/cr_components/color_change_listener/BUILD.gn
+index f89af6f653..80e6f31a7e 100644
+--- a/ui/webui/resources/cr_components/color_change_listener/BUILD.gn
++++ b/ui/webui/resources/cr_components/color_change_listener/BUILD.gn
+@@ -7,7 +7,8 @@ import("//mojo/public/tools/bindings/mojom.gni")
+ import("//ui/webui/resources/tools/build_webui.gni")
+ import("//ui/webui/webui_features.gni")
+ 
+-assert((!is_android && !is_ios) || is_desktop_android)
++# kiwi: also used by chrome://extensions on phone builds.
++assert((!is_android && !is_ios) || is_desktop_android || enable_extensions_core)
+ 
+ mojom("mojom") {
+   sources = [ "color_change_listener.mojom" ]
+diff --git a/ui/webui/resources/cr_components/cr_shortcut_input/BUILD.gn b/ui/webui/resources/cr_components/cr_shortcut_input/BUILD.gn
+index 5adcca5020..94e739402b 100644
+--- a/ui/webui/resources/cr_components/cr_shortcut_input/BUILD.gn
++++ b/ui/webui/resources/cr_components/cr_shortcut_input/BUILD.gn
+@@ -5,7 +5,8 @@
+ import("//ui/webui/resources/tools/build_webui.gni")
+ import("//ui/webui/webui_features.gni")
+ 
+-assert((!is_android && !is_ios) || is_desktop_android)
++# kiwi: also used by chrome://extensions on phone builds.
++assert((!is_android && !is_ios) || is_desktop_android || enable_extensions_core)
+ 
+ build_webui("build") {
+   grd_prefix = "cr_components_cr_shortcut_input"
+diff --git a/ui/webui/resources/cr_components/managed_footnote/BUILD.gn b/ui/webui/resources/cr_components/managed_footnote/BUILD.gn
+index 9f6536aa1d..e5f9fc5c19 100644
+--- a/ui/webui/resources/cr_components/managed_footnote/BUILD.gn
++++ b/ui/webui/resources/cr_components/managed_footnote/BUILD.gn
+@@ -5,7 +5,8 @@
+ import("//ui/webui/resources/tools/build_webui.gni")
+ import("//ui/webui/webui_features.gni")
+ 
+-assert((!is_android && !is_ios) || is_desktop_android)
++# kiwi: also used by chrome://extensions on phone builds.
++assert((!is_android && !is_ios) || is_desktop_android || enable_extensions_core)
+ 
+ build_webui("build") {
+   grd_prefix = "cr_components_managed_footnote"
+diff --git a/ui/webui/resources/css/BUILD.gn b/ui/webui/resources/css/BUILD.gn
+index 91cc473cde..447718c4d2 100644
+--- a/ui/webui/resources/css/BUILD.gn
++++ b/ui/webui/resources/css/BUILD.gn
+@@ -36,7 +36,7 @@ preprocess_if_expr("preprocess") {
+     in_files += [ "roboto.css" ]
+   }
+ 
+-  if (include_polymer || is_desktop_android) {
++  if (include_polymer || is_desktop_android || enable_extensions_core) {  # kiwi
+     in_files += [ "md_colors.css" ]
+   }
+ }

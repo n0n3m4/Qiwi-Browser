@@ -1,0 +1,333 @@
+From 807cac3d289bd0fd1119a7b2e3aff9787da01485 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 17:36:11 +0500
+Subject: [PATCH] Stack tab switcher: close-all undo, archiving off, incognito
+ lock via Hub, model events, accessibility
+
+- Close all tabs: do not close the model a second time without undo after
+  the DISCARD_ALL animation; M153 commits pending closures there, which
+  killed the Undo snackbar (tab loss).
+- Tab archiving defaults to off while the stack serves HUB (phones
+  without --disable-stack-tab-switcher); the stack has no "Inactive tabs"
+  entry, and upstream rescues already-archived tabs on the next start.
+- Incognito lock / accessibility: canUseStackLayout() decides (null
+  profile, touch exploration, gesture-performing services -> Hub);
+  exitStackIfUnusable() on resume and on accessibility changes leaves a
+  stack that may no longer be shown, so the Hub with its lock view is
+  used next. HubLayout is created even if the Hub manager already exists.
+- Tabs created in the background or by code only get a card instead of
+  closing the switcher; legacy willCloseTab/willCloseMultipleTabs remove
+  cards for closes the stack did not start.
+- Also drops the Safety Hub NTP magic-stack card registration left
+  behind by Disable-safety-check (its delegate no longer exists).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../chrome/browser/ChromeTabbedActivity.java  | 15 ++--
+ .../layouts/LayoutManagerChrome.java          |  9 +-
+ .../layouts/LayoutManagerChromePhone.java     | 82 +++++++++++++++++--
+ .../compositor/layouts/phone/StackLayout.java |  2 +-
+ .../layouts/phone/StackLayoutBase.java        | 50 ++++++-----
+ .../browser/tab/TabArchiveSettings.java       | 14 +++-
+ 6 files changed, 132 insertions(+), 40 deletions(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+index 8a8aea3f4e..d748025318 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+@@ -243,7 +243,6 @@ import org.chromium.chrome.browser.read_later.ReadingListBackPressHandler;
+ import org.chromium.chrome.browser.recent_tabs.CrossDevicePaneFactory;
+ import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper;
+ import org.chromium.chrome.browser.reengagement.ReengagementNotificationController;
+-import org.chromium.chrome.browser.safety_hub.SafetyHubMagicStackBuilder;
+ import org.chromium.chrome.browser.search_engines.SearchEngineChoiceNotification;
+ import org.chromium.chrome.browser.searchwidget.SearchActivityClientImpl;
+ import org.chromium.chrome.browser.selection.ChromeSelectionDropdownMenuDelegate;
+@@ -1728,6 +1727,12 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+ 
+         super.onResumeWithNative();
+ 
++        // "Lock Incognito tabs" may have been turned on in Settings while the stack was up; the
++        // lock is drawn by the Hub or over a tab, never over the stack.
++        if (mLayoutManager instanceof LayoutManagerChromePhone phoneLayoutManager) {
++            phoneLayoutManager.exitStackIfUnusable();
++        }
++
+         DefaultBrowserPromoUtils.getInstance().maybeRecordDeepLinkOutcome();
+ 
+         if (!isColdStart() && isMainIntentLaunchPostOnResume()) {
+@@ -3450,14 +3455,6 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+             moduleRegistry.registerModule(ModuleType.PRICE_CHANGE, priceChangeModuleBuilder);
+         }
+ 
+-        SafetyHubMagicStackBuilder safetyHubMagicStackBuilder =
+-                new SafetyHubMagicStackBuilder(
+-                        this,
+-                        mTabModelProfileSupplier,
+-                        mTabModelSelector,
+-                        getModalDialogManagerSupplier());
+-        moduleRegistry.registerModule(ModuleType.SAFETY_HUB, safetyHubMagicStackBuilder);
+-
+         // Fetch and register the appropriate collection of educational tip or setup list modules.
+         HomeTipsModulesProvider.registerTipModules(
+                 createEducationTipModuleActionDelegate(), moduleRegistry);
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChrome.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChrome.java
+index 796a664ff6..4f8064a43a 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChrome.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChrome.java
+@@ -251,11 +251,10 @@ public class LayoutManagerChrome extends LayoutManagerImpl implements Accessibil
+      * switcher is shown on tablets and phones.
+      */
+     private void initHubLayout() {
+-        var tabSwitcher = mTabSwitcherSupplier.get();
+-        if (tabSwitcher != null) {
+-            return;
+-        }
+-
++        // No early return when the tab switcher pane already exists: with the stack serving HUB,
++        // the Hub manager can be built (tab-group suggestion intent, incognito re-auth "See other
++        // tabs") before any HubLayout, and a later Hub fallback still needs the layout. The
++        // HubLayout reuses the existing Hub manager through the shared lazy supplier.
+         if (mHubLayout == null) {
+             createHubLayout(mHubLayoutDependencyHolder);
+         }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChromePhone.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChromePhone.java
+index 59d254ac31..8982198bd4 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChromePhone.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChromePhone.java
+@@ -27,6 +27,7 @@ import org.chromium.chrome.browser.incognito.reauth.IncognitoReauthManager;
+ import org.chromium.chrome.browser.layouts.LayoutType;
+ import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.tab.Tab;
++import org.chromium.chrome.browser.tab.TabLaunchType;
+ import org.chromium.chrome.browser.tab_ui.TabContentManager;
+ import org.chromium.chrome.browser.tab_ui.TabSwitcher;
+ import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
+@@ -204,16 +205,44 @@ public class LayoutManagerChromePhone extends LayoutManagerChrome {
+         Layout active = getActiveLayout();
+         if (active == mStackLayout) return true;
+         if (mHubLayout != null && active == mHubLayout) return false;
++        return canUseStackLayout();
++    }
++
++    private boolean canUseStackLayout() {
+         if (CommandLine.getInstance().hasSwitch(ChromeSwitches.DISABLE_STACK_TAB_SWITCHER)) {
+             return false;
+         }
+-        // The stack cards are compositor-drawn and expose no virtual views, so TalkBack users
+-        // keep the Hub.
+-        if (AccessibilityState.isTouchExplorationEnabled()) return false;
++        // The stack cards are compositor-drawn and expose no virtual views, so users of a screen
++        // reader or of a gesture-performing service (Switch Access, Voice Access) keep the Hub.
++        if (AccessibilityState.isTouchExplorationEnabled()
++                || AccessibilityState.isPerformGesturesEnabled()) {
++            return false;
++        }
+         // Incognito re-auth ("Lock Incognito tabs") is drawn inside the Hub; the stack would show
+-        // incognito thumbnails without it, so keep the Hub while that setting is on.
++        // incognito thumbnails without it, so keep the Hub while that setting is on (or unknown).
+         Profile profile = getTabModelSelector().getProfile(/* offTheRecord= */ false);
+-        return profile == null || !IncognitoReauthManager.isIncognitoReauthEnabled(profile);
++        return profile != null && !IncognitoReauthManager.isIncognitoReauthEnabled(profile);
++    }
++
++    /**
++     * Leaves a visible stack once it may no longer be used (an accessibility service or the
++     * incognito lock was turned on while it was up). The next tab switcher show picks the Hub.
++     */
++    public void exitStackIfUnusable() {
++        if (mStackLayout == null
++                || getActiveLayout() != mStackLayout
++                || mStackLayout.isStartingToHide()
++                || !mStackLayout.handlesBackPress()
++                || canUseStackLayout()) {
++            return;
++        }
++        showLayout(LayoutType.BROWSING, /* animate= */ false);
++    }
++
++    @Override
++    public void onAccessibilityModeChanged(boolean enabled) {
++        super.onAccessibilityModeChanged(enabled);
++        exitStackIfUnusable();
+     }
+ 
+     @Override
+@@ -248,6 +277,49 @@ public class LayoutManagerChromePhone extends LayoutManagerChrome {
+         }
+     }
+ 
++    @Override
++    protected void tabCreated(
++            int id,
++            int sourceId,
++            @TabLaunchType int launchType,
++            boolean incognito,
++            boolean willBeSelected,
++            float originX,
++            float originY) {
++        // The stack zooms into a new tab only when the user opened it; tabs added by code
++        // (extension chrome.tabs.create, a tab moved in from another window) just get a card.
++        if (mStackLayout != null
++                && getActiveLayout() == mStackLayout
++                && !isUserInitiatedLaunch(launchType)) {
++            willBeSelected = false;
++        }
++        super.tabCreated(id, sourceId, launchType, incognito, willBeSelected, originX, originY);
++    }
++
++    // ponytail: allowlist; a user-facing launch type missing here only keeps the stack open.
++    private static boolean isUserInitiatedLaunch(@TabLaunchType int launchType) {
++        switch (launchType) {
++            case TabLaunchType.FROM_LINK:
++            case TabLaunchType.FROM_EXTERNAL_APP:
++            case TabLaunchType.FROM_CHROME_UI:
++            case TabLaunchType.FROM_TAB_SWITCHER_UI:
++            case TabLaunchType.FROM_LONGPRESS_FOREGROUND:
++            case TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP:
++            case TabLaunchType.FROM_LONGPRESS_INCOGNITO:
++            case TabLaunchType.FROM_LAUNCHER_SHORTCUT:
++            case TabLaunchType.FROM_LAUNCH_NEW_INCOGNITO_TAB:
++            case TabLaunchType.FROM_APP_WIDGET:
++            case TabLaunchType.FROM_OMNIBOX:
++            case TabLaunchType.FROM_RECENT_TABS_FOREGROUND:
++            case TabLaunchType.FROM_HISTORY_NAVIGATION_FOREGROUND:
++            case TabLaunchType.FROM_READING_LIST:
++            case TabLaunchType.FROM_LINK_CREATING_NEW_WINDOW:
++                return true;
++            default:
++                return false;
++        }
++    }
++
+     @Override
+     protected void tabCreating(int sourceId, boolean isIncognito) {
+         if (getActiveLayout() != null
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
+index 7fff4bf553..c6070d158d 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayout.java
+@@ -168,7 +168,7 @@ public class StackLayout extends StackLayoutBase {
+             float originY) {
+         super.onTabCreated(
+                 time, id, tabIndex, sourceId, newIsIncognito, background, originX, originY);
+-        onTabModelSwitched(newIsIncognito);
++        if (!background) onTabModelSwitched(newIsIncognito);
+     }
+ 
+     @Override
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
+index abe9709e0f..367d46bb1c 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
+@@ -606,10 +606,25 @@ public abstract class StackLayoutBase extends Layout {
+                         for (Tab tab : tabs) onTabClosing(time, tab.getId());
+                     }
+ 
+-                    // TabClosureMethodRefactor is off by default in 153, so a close-all only
+-                    // sends the legacy willCloseAllTabs, never willCloseTabs.
+-                    // ponytail: single/multiple legacy closes still rely on uiRequestingCloseTab;
+-                    // mirror willCloseTab/willCloseMultipleTabs if model-driven closes must animate.
++                    // TabClosureMethodRefactor is off by default in 153, so closes only send the
++                    // legacy willCloseTab / willCloseMultipleTabs / willCloseAllTabs. Mirror them
++                    // so closes the stack didn't start (archiver, chrome.tabs.remove,
++                    // window.close()) drop their cards. Cards the stack is already discarding are
++                    // ignored by Stack#tabClosingEffect (isDying).
++                    @Override
++                    public void willCloseTab(Tab tab, boolean didCloseAlone) {
++                        // A close-all/multiple also sends willCloseTab per tab; handled below.
++                        if (!isActive() || !didCloseAlone) return;
++                        onTabClosing(LayoutManagerImpl.time(), tab.getId());
++                    }
++
++                    @Override
++                    public void willCloseMultipleTabs(boolean allowUndo, List<Tab> tabs) {
++                        if (!isActive()) return;
++                        long time = LayoutManagerImpl.time();
++                        for (Tab tab : tabs) onTabClosing(time, tab.getId());
++                    }
++
+                     @Override
+                     public void willCloseAllTabs(boolean incognito) {
+                         if (!isActive()) return;
+@@ -842,14 +857,15 @@ public abstract class StackLayoutBase extends Layout {
+         super.onTabCreated(
+                 time, id, tabIndex, sourceId, newIsIncognito, background, originX, originY);
+ 
+-        // TODO(stack): M90 hid the switcher for background tabs too (selecting the new tab).
+-        // Keep that, but verify FROM_LONGPRESS_BACKGROUND tabs created elsewhere while the
+-        // switcher is visible.
+-        // Suppress startHiding()'s logging to the Tabs.TabOffsetOfSwitch histogram and its tab
+-        // selecting effect.
+-        mIsHidingBecauseOfNewTabCreation = true;
+-        mNextTabId = id;
+-        startHiding();
++        // M90 hid the switcher for background tabs too, selecting them. Here a background tab
++        // (or one added by code, see LayoutManagerChromePhone#tabCreated) only gets a card.
++        if (!background) {
++            // Suppress startHiding()'s logging to the Tabs.TabOffsetOfSwitch histogram and its tab
++            // selecting effect.
++            mIsHidingBecauseOfNewTabCreation = true;
++            mNextTabId = id;
++            startHiding();
++        }
+         if (mStacks.isEmpty()) return;
+         mStacks.get(getTabStackIndex(id)).tabCreated(time, id);
+ 
+@@ -986,13 +1002,9 @@ public abstract class StackLayoutBase extends Layout {
+     }
+ 
+     public void uiDoneClosingAllTabs(boolean incognito) {
+-        // Propagate the tab closure to the model.
+-        mTabModelSelector
+-                .getModel(incognito)
+-                .getTabRemover()
+-                .closeTabs(
+-                        TabClosureParams.closeAllTabs().allowUndo(false).build(),
+-                        /* allowDialog= */ false);
++        // Every close-all now starts in the model (willCloseAllTabs/willCloseTabs drive the
++        // DISCARD_ALL animation), so there is nothing left to propagate. M90 closed the model
++        // again here without undo; in 153 that commits the pending closures and kills Undo.
+     }
+ 
+     /**
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tab/TabArchiveSettings.java b/chrome/android/java/src/org/chromium/chrome/browser/tab/TabArchiveSettings.java
+index 204f563806..9d307730f9 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tab/TabArchiveSettings.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tab/TabArchiveSettings.java
+@@ -8,6 +8,7 @@ import android.content.SharedPreferences;
+ 
+ import androidx.annotation.VisibleForTesting;
+ 
++import org.chromium.base.CommandLine;
+ import org.chromium.base.ContextUtils;
+ import org.chromium.base.ObserverList;
+ import org.chromium.base.shared_preferences.SharedPreferencesManager;
+@@ -16,6 +17,7 @@ import org.chromium.base.task.TaskTraits;
+ import org.chromium.build.BuildConfig;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
++import org.chromium.chrome.browser.flags.ChromeSwitches;
+ import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+ import org.chromium.ui.base.DeviceFormFactor;
+ 
+@@ -106,8 +108,18 @@ public class TabArchiveSettings {
+         // Turn off the archive feature by default for tests since we can't control when tabs
+         // are created, and tabs disappearing from tests is very unexpected. For archive tests,
+         // this will need to be turned on manually.
++        // The phone stack tab switcher has no "Inactive tabs" entry, so archived tabs would be
++        // unreachable: default to off there. With archiving off, ArchivedTabModelOrchestrator
++        // rescues already-archived tabs on the next start.
+         return mPrefsManager.readBoolean(
+-                ChromePreferenceKeys.TAB_DECLUTTER_ARCHIVE_ENABLED, !BuildConfig.IS_FOR_TEST);
++                ChromePreferenceKeys.TAB_DECLUTTER_ARCHIVE_ENABLED,
++                !BuildConfig.IS_FOR_TEST && !isStackTabSwitcherInUse());
++    }
++
++    private static boolean isStackTabSwitcherInUse() {
++        return !DeviceFormFactor.isNonMultiDisplayContextOnTablet(
++                        ContextUtils.getApplicationContext())
++                && !CommandLine.getInstance().hasSwitch(ChromeSwitches.DISABLE_STACK_TAB_SWITCHER);
+     }
+ 
+     /** Sets whether archive is enabled in settings. */

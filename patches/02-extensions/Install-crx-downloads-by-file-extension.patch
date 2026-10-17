@@ -1,0 +1,45 @@
+From 50a117133ae2782f9fdd4efc2f9c007d706cd880 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 10:58:20 +0500
+Subject: [PATCH] Extensions: install .crx downloads served with a generic MIME
+ type
+
+GitHub and most file hosts serve .crx files as application/octet-stream,
+and IsExtensionDownload() only looked at the MIME type, so e.g. uBlock
+Origin's release .crx was saved to Downloads and never offered for
+install. On Android, also treat a download whose file name ends in .crx
+as an extension. It then takes the usual path: CRX3 verification,
+the "Add extension?" prompt, and the off-store gate that requires a tab.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ extensions/browser/extension_util.cc | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/extensions/browser/extension_util.cc b/extensions/browser/extension_util.cc
+index d934b8791f..9d59671d37 100644
+--- a/extensions/browser/extension_util.cc
++++ b/extensions/browser/extension_util.cc
+@@ -10,6 +10,7 @@
+ #include "base/command_line.h"
+ #include "base/no_destructor.h"
+ #include "base/strings/string_util.h"
++#include "build/build_config.h"
+ #include "build/chromeos_buildflags.h"
+ #include "components/crx_file/id_util.h"
+ #include "components/download/public/common/download_item.h"
+@@ -585,6 +586,14 @@ bool IsExtensionDownload(const download::DownloadItem& download_item) {
+   if (download_item.GetMimeType() == Extension::kMimeType) {
+     return true;
+   }
++#if BUILDFLAG(IS_ANDROID)
++  // kiwi: hosts like GitHub serve .crx files as application/octet-stream.
++  // Recognize them by file name; CrxInstaller still verifies and prompts.
++  if (download_item.GetFileNameToReportUser().MatchesExtension(
++          FILE_PATH_LITERAL(".crx"))) {
++    return true;
++  }
++#endif
+   return false;
+ }
+ 

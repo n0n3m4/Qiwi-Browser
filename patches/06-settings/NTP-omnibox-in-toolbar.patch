@@ -1,0 +1,46 @@
+From a4c9f34444c5753d54b1caa103cc66e8516d215a Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 11:48:02 +0500
+Subject: [PATCH] NTP: keep the omnibox in the toolbar, drop the fake search
+ box
+
+Phones show the NTP in "single URL bar" mode: the toolbar hides its
+location bar and the page has a centered fake search box that turns into
+the omnibox on scroll or tap. Kiwi kept the address bar in the toolbar.
+isInSingleUrlBarMode() now returns false on phones too (the toolbar's
+existing non-NTP path, as on tablets) and the NTP's search box view is
+GONE.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../java/src/org/chromium/chrome/browser/ntp/NewTabPage.java   | 3 ++-
+ .../org/chromium/chrome/browser/ntp/NewTabPageCoordinator.java | 2 ++
+ 2 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPage.java b/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPage.java
+index 8e20aad2c8..3a7267a0f0 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPage.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPage.java
+@@ -837,7 +837,8 @@ public class NewTabPage
+      *     NTP.
+      */
+     public static boolean isInSingleUrlBarMode(boolean isLff) {
+-        return !isLff;
++        // kiwi: the omnibox stays in the toolbar on the NTP, like on tablets.
++        return false;
+     }
+ 
+     /**
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPageCoordinator.java b/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPageCoordinator.java
+index 9f0ffaf438..c580313120 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPageCoordinator.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPageCoordinator.java
+@@ -414,6 +414,8 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
+                         mProfile,
+                         mBackPressManager);
+         mModel.set(NewTabPageLayoutProperties.SEARCH_BOX_VIEW, mNtpSearchBox.getView());
++        // kiwi: no fake search box; the toolbar omnibox is always shown (isInSingleUrlBarMode).
++        mNtpSearchBox.getView().setVisibility(View.GONE);
+ 
+         updateSearchBoxTwoSideMargin();
+         initializeLogoCoordinator();

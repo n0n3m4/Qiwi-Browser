@@ -1,0 +1,559 @@
+From d28a3f11c7373affb0100b9469e9fbee28248620 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 09:32:36 +0500
+Subject: [PATCH] Hide identity disc and stale Google options
+
+This build has no Play services, no Google account sign-in, and metrics/UKM
+upload compiled out, so the following surfaces only promise things that can
+never work. Remove them:
+
+- NTP identity disc ("Signed out. Opens options to sign in." toolbar button):
+  IdentityDiscController never marks its ButtonData showable, so the optional
+  toolbar slot falls through to the adaptive toolbar button, the same as
+  upstream's SigninLevelUpButton configuration. Sign-in does nothing without
+  Play services.
+- Settings > Google services:
+  - "Allow Chrome sign-in": there is no sign-in to allow.
+  - "Help improve features and performance" (usage_and_crash_reports):
+    metrics upload is compiled out.
+  - "Make searches and browsing better" (url_keyed_anonymized_data): UKM is
+    compiled out.
+  - Price tracking annotations and price notifications: Google Shopping
+    backend, not used.
+  Kept: "Improve search suggestions" (talks to the chosen search engine),
+  "Usage stats reporting" (Android Digital Wellbeing, device-local) and
+  Touch to Search. The PREF_* keys referenced by tests stay.
+- Settings main page sign-in row (SignInPreference, "sign_in"): its "Sign in
+  to ..." promo can never complete. Removed from main_preferences.xml, the
+  MainSettings wiring (ProfileDataCache, bottom-sheet sign-in coordinator)
+  and the search-index entry. ManageSyncSettings was only reachable through
+  that row; its index entries are now orphaned and pruned by resolveIndex.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../res/xml/google_services_preferences.xml   |  28 ----
+ .../android/java/res/xml/main_preferences.xml |   3 -
+ .../identity_disc/IdentityDiscController.java |   4 +-
+ .../chrome/browser/settings/MainSettings.java |  74 +--------
+ .../sync/settings/GoogleServicesSettings.java | 152 +-----------------
+ 5 files changed, 7 insertions(+), 254 deletions(-)
+
+diff --git a/chrome/android/java/res/xml/google_services_preferences.xml b/chrome/android/java/res/xml/google_services_preferences.xml
+index a614c99653..600982a2d8 100644
+--- a/chrome/android/java/res/xml/google_services_preferences.xml
++++ b/chrome/android/java/res/xml/google_services_preferences.xml
+@@ -11,39 +11,11 @@ found in the LICENSE file.
+      updated accordingly. -->
+ <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+     xmlns:app="http://schemas.android.com/apk/res-auto">
+-    <org.chromium.components.browser_ui.settings.ChromeSwitchPreference
+-        android:key="allow_signin"
+-        android:title="@string/allow_chrome_signin_title"
+-        android:summary="@string/allow_chrome_signin_summary"
+-        android:persistent="false"/>
+-    <!-- Shown for some user states and hidden for others, so hide by default
+-         to avoid flickering. -->
+-    <org.chromium.components.browser_ui.settings.ChromeSwitchPreference
+-        android:key="usage_and_crash_reports"
+-        android:title="@string/usage_and_crash_reports_title"
+-        android:summary="@string/usage_and_crash_reports_summary"
+-        android:persistent="false"/>
+-    <org.chromium.components.browser_ui.settings.ChromeSwitchPreference
+-        android:key="url_keyed_anonymized_data"
+-        android:title="@string/url_keyed_anonymized_data_title"
+-        android:summary="@string/url_keyed_anonymized_data_summary"
+-        android:persistent="false"/>
+     <org.chromium.components.browser_ui.settings.ChromeSwitchPreference
+         android:key="search_suggestions"
+         android:title="@string/improve_search_suggestions_title"
+         android:summary="@string/improve_search_suggestions_summary"
+         android:persistent="false"/>
+-    <org.chromium.components.browser_ui.settings.ChromeSwitchPreference
+-        android:key="price_tracking_annotations"
+-        android:title="@string/track_prices_on_tabs"
+-        android:summary="@string/track_prices_on_tabs_description"
+-        android:persistent="false"/>
+-    <org.chromium.components.browser_ui.settings.ChromeBasePreference
+-        android:key="price_notifications_section"
+-        android:title="@string/price_notifications_settings_title"
+-        android:summary="@string/price_notifications_settings_description"
+-        android:fragment="org.chromium.chrome.browser.commerce.PriceNotificationSettingsFragment"
+-        app:isPreferenceVisible="false"/>
+     <org.chromium.components.browser_ui.settings.ChromeBasePreference
+         android:key="usage_stats_reporting"
+         android:title="@string/usage_stats_setting_title"
+diff --git a/chrome/android/java/res/xml/main_preferences.xml b/chrome/android/java/res/xml/main_preferences.xml
+index 7598289843..b047012bc4 100644
+--- a/chrome/android/java/res/xml/main_preferences.xml
++++ b/chrome/android/java/res/xml/main_preferences.xml
+@@ -12,9 +12,6 @@ found in the LICENSE file.
+         android:key="account_and_google_services_section"
+         android:order="1"
+         android:title="@string/prefs_section_account_and_google_services"/>
+-    <org.chromium.chrome.browser.sync.settings.SignInPreference
+-        android:key="sign_in"
+-        android:order="2"/>
+     <org.chromium.components.browser_ui.settings.ChromeBasePreference
+         android:key="google_services"
+         android:order="4"
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/identity_disc/IdentityDiscController.java b/chrome/android/java/src/org/chromium/chrome/browser/identity_disc/IdentityDiscController.java
+index 5aefc9304a..d4cd3e5393 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/identity_disc/IdentityDiscController.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/identity_disc/IdentityDiscController.java
+@@ -218,7 +218,9 @@ public class IdentityDiscController
+ 
+         mButtonData.setButtonSpec(
+                 buttonSpecWithDrawableAndDescription(mButtonData.getButtonSpec(), profileData));
+-        mButtonData.setCanShow(true);
++        // No account UI in this build: the identity disc is never shown. The next provider
++        // (adaptive toolbar button) gets the slot, as upstream does with SigninLevelUpButton.
++        mButtonData.setCanShow(false);
+     }
+ 
+     private ButtonSpec buttonSpecWithDrawableAndDescription(
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/settings/MainSettings.java b/chrome/android/java/src/org/chromium/chrome/browser/settings/MainSettings.java
+index 3cd6fca347..ec622376fa 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/settings/MainSettings.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/settings/MainSettings.java
+@@ -30,7 +30,6 @@ import org.chromium.base.DeviceInfo;
+ import org.chromium.base.shared_preferences.SharedPreferencesManager;
+ import org.chromium.base.supplier.MonotonicObservableSupplier;
+ import org.chromium.base.supplier.ObservableSuppliers;
+-import org.chromium.base.supplier.OneshotSupplierImpl;
+ import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+ import org.chromium.base.supplier.SupplierUtils;
+ import org.chromium.base.task.PostTask;
+@@ -44,7 +43,6 @@ import org.chromium.chrome.browser.autofill.settings.SettingsNavigationHelper;
+ import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFragment;
+ import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsMediator;
+ import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsReferrer;
+-import org.chromium.chrome.browser.device_lock.DeviceLockActivityLauncherImpl;
+ import org.chromium.chrome.browser.flags.ChromeFeatureList;
+ import org.chromium.chrome.browser.glic.GlicEnabling;
+ import org.chromium.chrome.browser.homepage.HomepageManager;
+@@ -57,18 +55,13 @@ import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils;
+ import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
+ import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
+-import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
+ import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
+-import org.chromium.chrome.browser.signin.services.ProfileDataCache;
+ import org.chromium.chrome.browser.signin.services.SigninManager;
+ import org.chromium.chrome.browser.sync.SyncServiceFactory;
+-import org.chromium.chrome.browser.sync.settings.ManageSyncSettings;
+-import org.chromium.chrome.browser.sync.settings.SignInPreference;
+ import org.chromium.chrome.browser.toolbar.settings.AddressBarPreference;
+ import org.chromium.chrome.browser.toolbar.settings.AddressBarSettingsFragment;
+ import org.chromium.chrome.browser.tracing.settings.DeveloperSettings;
+ import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+-import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
+ import org.chromium.chrome.browser.ui.signin.SignOutCoordinator;
+ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+ import org.chromium.components.browser_ui.settings.ChromeBasePreference;
+@@ -79,11 +72,7 @@ import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+ import org.chromium.components.browser_ui.styles.SemanticColorUtils;
+ import org.chromium.components.search_engines.TemplateUrl;
+ import org.chromium.components.search_engines.TemplateUrlService;
+-import org.chromium.components.signin.AccountManagerFacade;
+-import org.chromium.components.signin.AccountManagerFacadeProvider;
+-import org.chromium.components.signin.SigninFeatureMap;
+ import org.chromium.components.signin.identitymanager.IdentityManager;
+-import org.chromium.components.signin.metrics.SigninAccessPoint;
+ import org.chromium.components.sync.SyncService;
+ import org.chromium.components.user_prefs.UserPrefs;
+ import org.chromium.ui.base.ActivityResultTracker;
+@@ -112,6 +101,7 @@ public class MainSettings extends ChromeBaseSettingsFragment
+     public static final String PREF_SETTINGS_PROMO_CARD = "settings_promo_card";
+     public static final String PREF_ACCOUNT_AND_GOOGLE_SERVICES_SECTION =
+             "account_and_google_services_section";
++    // The sign-in row is removed in this build; the key is kept only for tests.
+     public static final String PREF_SIGN_IN = "sign_in";
+     public static final String PREF_GOOGLE_SERVICES = "google_services";
+     public static final String PREF_BASICS_SECTION = "basics_section";
+@@ -163,7 +153,6 @@ public class MainSettings extends ChromeBaseSettingsFragment
+     private ActivityResultTracker mActivityResultTracker;
+     private Supplier<@Nullable BottomSheetController> mBottomSheetControllerSupplier;
+     private Supplier<@Nullable SnackbarManager> mSnackbarManagerSupplier;
+-    private @Nullable BottomSheetSigninAndHistorySyncCoordinator mSigninCoordinator;
+ 
+     private final List<Observer> mObserverList = new ArrayList<>();
+ 
+@@ -265,10 +254,6 @@ public class MainSettings extends ChromeBaseSettingsFragment
+         if (signinManager.isSigninSupported(/* requireUpdatedPlayServices= */ false)) {
+             signinManager.removeSignInStateObserver(this);
+         }
+-        if (mSigninCoordinator != null) {
+-            mSigninCoordinator.destroy();
+-            mSigninCoordinator = null;
+-        }
+     }
+ 
+     @SuppressWarnings("UseSharedPreferencesManagerFromChromeCheck")
+@@ -352,45 +337,6 @@ public class MainSettings extends ChromeBaseSettingsFragment
+ 
+         SettingsUtils.addPreferencesFromResource(this, R.xml.main_preferences);
+ 
+-        IdentityManager identityManager =
+-                IdentityServicesProvider.get().getIdentityManager(getProfile());
+-        assert identityManager != null;
+-        ProfileDataCache profileDataCache =
+-                ProfileDataCache.createWithDefaultImageSizeAndNoBadge(
+-                        getContext(), identityManager);
+-        AccountManagerFacade accountManagerFacade = AccountManagerFacadeProvider.getInstance();
+-
+-        OneshotSupplierImpl<BottomSheetSigninAndHistorySyncCoordinator> signinCoordinatorSupplier =
+-                new OneshotSupplierImpl<>();
+-        SignInPreference signInPreference = findPreference(PREF_SIGN_IN);
+-        if (SigninFeatureMap.getInstance().isActivitylessSigninAllEntryPointEnabled()) {
+-            // TODO(crbug.com/495349057): update this to use the new sign-in coordinator API with
+-            // suppliers.
+-            SupplierUtils.waitForAll(
+-                    () -> {
+-                        OneshotSupplierImpl<Profile> profileSupplier = new OneshotSupplierImpl<>();
+-                        profileSupplier.set(getProfile());
+-                        var l = SigninAndHistorySyncActivityLauncherImpl.get();
+-                        mSigninCoordinator =
+-                                l.createBottomSheetSigninCoordinatorAndObserveAddAccountResult(
+-                                        SupplierUtils.asNonNull(mWindowAndroidSupplier).get(),
+-                                        getActivity(),
+-                                        mActivityResultTracker,
+-                                        signInPreference,
+-                                        DeviceLockActivityLauncherImpl.get(),
+-                                        profileSupplier,
+-                                        SupplierUtils.asNonNull(mBottomSheetControllerSupplier),
+-                                        mModalDialogManagerSupplier.asNonNull().get(),
+-                                        SupplierUtils.asNonNull(mSnackbarManagerSupplier).get(),
+-                                        SigninAccessPoint.SETTINGS);
+-                        signinCoordinatorSupplier.set(mSigninCoordinator);
+-                    },
+-                    mWindowAndroidSupplier,
+-                    mModalDialogManagerSupplier,
+-                    mSnackbarManagerSupplier);
+-        }
+-        signInPreference.initialize(
+-                getProfile(), profileDataCache, accountManagerFacade, signinCoordinatorSupplier);
+         ChromeBasePreference googleServicePreference = findPreference(PREF_GOOGLE_SERVICES);
+         googleServicePreference.setViewId(R.id.account_management_google_services_row);
+ 
+@@ -542,12 +488,6 @@ public class MainSettings extends ChromeBaseSettingsFragment
+             return;
+         }
+ 
+-        if (shouldShowSignInPref(getProfile())) {
+-            addPreferenceIfAbsent(PREF_SIGN_IN);
+-        } else {
+-            removePreferenceIfPresent(PREF_SIGN_IN);
+-        }
+-
+         updateSearchEnginePreference();
+         updateAutofillPreferences();
+         updateAddressBarPreference();
+@@ -570,12 +510,6 @@ public class MainSettings extends ChromeBaseSettingsFragment
+         notifyPreferencesUpdated();
+     }
+ 
+-    private static boolean shouldShowSignInPref(Profile profile) {
+-        SigninManager signinManager = IdentityServicesProvider.get().getSigninManager(profile);
+-        assumeNonNull(signinManager);
+-        return signinManager.isSigninSupported(/* requireUpdatedPlayServices= */ false);
+-    }
+-
+     private static boolean shouldShowDeveloperSettings() {
+         return DeveloperSettings.shouldShowDeveloperSettings();
+     }
+@@ -956,12 +890,6 @@ public class MainSettings extends ChromeBaseSettingsFragment
+                     if (!shouldShowSafetyHubPref()) {
+                         indexData.removeEntry(getUniqueId(PREF_SAFETY_HUB));
+                     }
+-                    if (!shouldShowSignInPref(profile) || !SignInPreference.isSignedIn(profile)) {
+-                        indexData.removeEntry(getUniqueId(PREF_SIGN_IN));
+-                    } else {
+-                        indexData.addChildParentLink(
+-                                ManageSyncSettings.class.getName(), getUniqueId(PREF_SIGN_IN));
+-                    }
+                     if (!shouldShowDeveloperSettings()) {
+                         indexData.removeEntry(getUniqueId(PREF_DEVELOPER));
+                     }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/sync/settings/GoogleServicesSettings.java b/chrome/android/java/src/org/chromium/chrome/browser/sync/settings/GoogleServicesSettings.java
+index 518e1cd9bc..bf682d65ce 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/sync/settings/GoogleServicesSettings.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/sync/settings/GoogleServicesSettings.java
+@@ -4,8 +4,6 @@
+ 
+ package org.chromium.chrome.browser.sync.settings;
+ 
+-import static org.chromium.build.NullUtil.assertNonNull;
+-import static org.chromium.build.NullUtil.assumeNonNull;
+ 
+ import android.content.Context;
+ import android.os.Bundle;
+@@ -24,35 +22,22 @@ import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
+ import org.chromium.chrome.R;
+-import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
+ import org.chromium.chrome.browser.contextualsearch.ContextualSearchFieldTrial;
+ import org.chromium.chrome.browser.contextualsearch.ContextualSearchManager;
+-import org.chromium.chrome.browser.metrics.ChangeMetricsReportingStateCalledFrom;
+-import org.chromium.chrome.browser.metrics.UmaSessionStats;
+ import org.chromium.chrome.browser.preferences.Pref;
+-import org.chromium.chrome.browser.price_tracking.PriceTrackingFeatures;
+-import org.chromium.chrome.browser.price_tracking.PriceTrackingUtilities;
+-import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManagerImpl;
+ import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
+ import org.chromium.chrome.browser.settings.ChromeManagedPreferenceDelegate;
+ import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
+-import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
+-import org.chromium.chrome.browser.signin.services.UnifiedConsentServiceBridge;
+ import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+-import org.chromium.chrome.browser.ui.signin.SignOutCoordinator;
+ import org.chromium.chrome.browser.usage_stats.UsageStatsConsentDialog;
+ import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
+ import org.chromium.components.browser_ui.settings.ManagedPreferenceDelegate;
+ import org.chromium.components.browser_ui.settings.SettingsUtils;
+ import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+-import org.chromium.components.commerce.core.CommerceFeatureUtils;
+ import org.chromium.components.omnibox.OmniboxCapabilities;
+ import org.chromium.components.prefs.PrefService;
+-import org.chromium.components.signin.identitymanager.IdentityManager;
+-import org.chromium.components.signin.metrics.SignoutReason;
+ import org.chromium.components.user_prefs.UserPrefs;
+-import org.chromium.ui.modaldialog.ModalDialogManagerHolder;
+ 
+ /**
+  * Settings fragment controlling a number of features communicating with Google services, such as
+@@ -67,6 +52,8 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
+     // public static final String PREF_AUTOFILL_ASSISTANT_SUBSECTION =
+     // "autofill_assistant_subsection";
+ 
++    // PREF_ALLOW_SIGNIN, PREF_USAGE_AND_CRASH_REPORTING and PREF_PRICE_TRACKING_ANNOTATIONS: their
++    // rows are removed in this build; the keys are kept only because tests reference them.
+     @VisibleForTesting public static final String PREF_ALLOW_SIGNIN = "allow_signin";
+ 
+     private static final String PREF_SEARCH_SUGGESTIONS = "search_suggestions";
+@@ -74,7 +61,6 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
+     @VisibleForTesting
+     public static final String PREF_USAGE_AND_CRASH_REPORTING = "usage_and_crash_reports";
+ 
+-    private static final String PREF_URL_KEYED_ANONYMIZED_DATA = "url_keyed_anonymized_data";
+     private static final String PREF_CONTEXTUAL_SEARCH = "contextual_search";
+ 
+     @VisibleForTesting
+@@ -83,21 +69,11 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
+     @VisibleForTesting
+     public static final String PREF_PRICE_TRACKING_ANNOTATIONS = "price_tracking_annotations";
+ 
+-    private static final String PREF_PRICE_NOTIFICATION_SECTION = "price_notifications_section";
+-
+-    private final PrivacyPreferencesManagerImpl mPrivacyPrefManager =
+-            PrivacyPreferencesManagerImpl.getInstance();
+-
+     private ManagedPreferenceDelegate mManagedPreferenceDelegate;
+     private PrefService mPrefService;
+ 
+-    private ChromeSwitchPreference mAllowSignin;
+     private ChromeSwitchPreference mSearchSuggestions;
+-    private ChromeSwitchPreference mUsageAndCrashReporting;
+-    private ChromeSwitchPreference mUrlKeyedAnonymizedData;
+-    private @Nullable ChromeSwitchPreference mPriceTrackingAnnotations;
+     private @Nullable Preference mContextualSearch;
+-    private @Nullable Preference mPriceNotificationSection;
+     private @Nullable Preference mUsageStatsReporting;
+     private @Nullable OneshotSupplier<SnackbarManager> mSnackbarManagerSupplier;
+     private final SettableMonotonicObservableSupplier<String> mPageTitle =
+@@ -113,59 +89,16 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
+ 
+         SettingsUtils.addPreferencesFromResource(this, R.xml.google_services_preferences);
+ 
+-        mAllowSignin = (ChromeSwitchPreference) findPreference(PREF_ALLOW_SIGNIN);
+-
+-        if (!shouldShowAllowSignIn(getProfile())) {
+-            // Do not display option to allow / disallow sign-in for supervised accounts since
+-            // these require the user to be signed-in and syncing.
+-            mAllowSignin.setVisible(false);
+-        } else {
+-            mAllowSignin.setOnPreferenceChangeListener(this);
+-            mAllowSignin.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
+-        }
+-
+         mSearchSuggestions = (ChromeSwitchPreference) findPreference(PREF_SEARCH_SUGGESTIONS);
+         mSearchSuggestions.setOnPreferenceChangeListener(this);
+         mSearchSuggestions.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
+ 
+-        mUsageAndCrashReporting =
+-                (ChromeSwitchPreference) findPreference(PREF_USAGE_AND_CRASH_REPORTING);
+-        mUsageAndCrashReporting.setOnPreferenceChangeListener(this);
+-        mUsageAndCrashReporting.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
+-        // TODO(b/483043192): Add UI for new Metrics Consent settings.
+-        if (mPrivacyPrefManager.shouldUseMetricsChoiceRestructure()) {
+-            mUsageAndCrashReporting.setVisible(false);
+-        }
+-
+-        mUrlKeyedAnonymizedData =
+-                (ChromeSwitchPreference) findPreference(PREF_URL_KEYED_ANONYMIZED_DATA);
+-        mUrlKeyedAnonymizedData.setOnPreferenceChangeListener(this);
+-        mUrlKeyedAnonymizedData.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
+-
+         mContextualSearch = findPreference(PREF_CONTEXTUAL_SEARCH);
+         if (!shouldShowContextualSearch()) {
+             removePreference(getPreferenceScreen(), mContextualSearch);
+             mContextualSearch = null;
+         }
+ 
+-        mPriceTrackingAnnotations =
+-                (ChromeSwitchPreference) findPreference(PREF_PRICE_TRACKING_ANNOTATIONS);
+-        if (!shouldShowPriceTrackingAnnotations(getProfile())) {
+-            removePreference(getPreferenceScreen(), mPriceTrackingAnnotations);
+-            mPriceTrackingAnnotations = null;
+-        } else {
+-            mPriceTrackingAnnotations.setOnPreferenceChangeListener(this);
+-            mPriceTrackingAnnotations.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
+-        }
+-
+-        mPriceNotificationSection = findPreference(PREF_PRICE_NOTIFICATION_SECTION);
+-        if (shouldShowPriceNotificationSection(getProfile())) {
+-            mPriceNotificationSection.setVisible(true);
+-        } else {
+-            removePreference(getPreferenceScreen(), mPriceNotificationSection);
+-            mPriceNotificationSection = null;
+-        }
+-
+         mUsageStatsReporting = findPreference(PREF_USAGE_STATS_REPORTING);
+         mUsageStatsReporting.setVisible(true);
+ 
+@@ -204,42 +137,8 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
+     @Override
+     public boolean onPreferenceChange(Preference preference, Object newValue) {
+         String key = preference.getKey();
+-        if (PREF_ALLOW_SIGNIN.equals(key)) {
+-            assert !getProfile().isChild() : "A supervised account must not update allow sign-in.";
+-
+-            IdentityManager identityManager =
+-                    assumeNonNull(IdentityServicesProvider.get().getIdentityManager(getProfile()));
+-            boolean shouldSignUserOut =
+-                    identityManager.hasPrimaryAccount() && !((boolean) newValue);
+-            if (!shouldSignUserOut) {
+-                mPrefService.setBoolean(Pref.SIGNIN_ALLOWED, (boolean) newValue);
+-                return true;
+-            }
+-
+-            SignOutCoordinator.startSignOutFlow(
+-                    requireContext(),
+-                    getProfile(),
+-                    ((ModalDialogManagerHolder) getActivity()).getModalDialogManager(),
+-                    assertNonNull(assumeNonNull(mSnackbarManagerSupplier).get()),
+-                    SignoutReason.USER_DISABLED_ALLOW_CHROME_SIGN_IN,
+-                    /* showConfirmDialog= */ true,
+-                    () -> {
+-                        mPrefService.setBoolean(Pref.SIGNIN_ALLOWED, false);
+-                        updatePreferences();
+-                    });
+-            // Don't change the preference state yet, it will be updated by SignOutCoordinator if
+-            // the user actually confirms the sign-out.
+-            return false;
+-        } else if (PREF_SEARCH_SUGGESTIONS.equals(key)) {
++        if (PREF_SEARCH_SUGGESTIONS.equals(key)) {
+             mPrefService.setBoolean(Pref.SEARCH_SUGGEST_ENABLED, (boolean) newValue);
+-        } else if (PREF_USAGE_AND_CRASH_REPORTING.equals(key)) {
+-            UmaSessionStats.changeMetricsReportingState(
+-                    (boolean) newValue, ChangeMetricsReportingStateCalledFrom.UI_SETTINGS);
+-        } else if (PREF_URL_KEYED_ANONYMIZED_DATA.equals(key)) {
+-            UnifiedConsentServiceBridge.setUrlKeyedAnonymizedDataCollectionEnabled(
+-                    getProfile(), (boolean) newValue);
+-        } else if (PREF_PRICE_TRACKING_ANNOTATIONS.equals(key)) {
+-            PriceTrackingUtilities.setTrackPricesOnTabsEnabled((boolean) newValue);
+         }
+         return true;
+     }
+@@ -255,12 +154,7 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
+     }
+ 
+     private void updatePreferences() {
+-        mAllowSignin.setChecked(mPrefService.getBoolean(Pref.SIGNIN_ALLOWED));
+         mSearchSuggestions.setChecked(mPrefService.getBoolean(Pref.SEARCH_SUGGEST_ENABLED));
+-        mUsageAndCrashReporting.setChecked(mPrivacyPrefManager.isUsageAndCrashReportingPermitted());
+-        mUrlKeyedAnonymizedData.setChecked(
+-                UnifiedConsentServiceBridge.isUrlKeyedAnonymizedDataCollectionEnabled(
+-                        getProfile()));
+ 
+         if (mContextualSearch != null) {
+             boolean isContextualSearchEnabled =
+@@ -268,10 +162,6 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
+             mContextualSearch.setSummary(
+                     isContextualSearchEnabled ? R.string.text_on : R.string.text_off);
+         }
+-        if (mPriceTrackingAnnotations != null) {
+-            mPriceTrackingAnnotations.setChecked(
+-                    PriceTrackingUtilities.isTrackPricesOnTabsEnabled(getProfile()));
+-        }
+         if (mUsageStatsReporting != null) {
+             if (shouldShowUsageStatsReporting(mPrefService)) {
+                 mUsageStatsReporting.setOnPreferenceClickListener(
+@@ -295,23 +185,10 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
+         }
+     }
+ 
+-    private static boolean shouldShowAllowSignIn(Profile profile) {
+-        return !profile.isChild();
+-    }
+-
+     private static boolean shouldShowContextualSearch() {
+         return ContextualSearchFieldTrial.isEnabled() && !OmniboxCapabilities.isDesktopPlatform();
+     }
+ 
+-    private static boolean shouldShowPriceTrackingAnnotations(Profile profile) {
+-        return PriceTrackingFeatures.allowUsersToDisablePriceAnnotations(profile);
+-    }
+-
+-    private static boolean shouldShowPriceNotificationSection(Profile profile) {
+-        return CommerceFeatureUtils.isShoppingListEligible(
+-                ShoppingServiceFactory.getForProfile(profile));
+-    }
+-
+     private static boolean shouldShowUsageStatsReporting(PrefService prefService) {
+         return prefService.getBoolean(Pref.USAGE_STATS_ENABLED);
+     }
+@@ -321,20 +198,9 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
+             @Override
+             public boolean isPreferenceControlledByPolicy(Preference preference) {
+                 String key = preference.getKey();
+-                if (PREF_ALLOW_SIGNIN.equals(key)) {
+-                    return mPrefService.isManagedPreference(Pref.SIGNIN_ALLOWED);
+-                }
+                 if (PREF_SEARCH_SUGGESTIONS.equals(key)) {
+                     return mPrefService.isManagedPreference(Pref.SEARCH_SUGGEST_ENABLED);
+                 }
+-                if (PREF_USAGE_AND_CRASH_REPORTING.equals(key)) {
+-                    return !PrivacyPreferencesManagerImpl.getInstance()
+-                            .isUsageAndCrashReportingPermittedByPolicy();
+-                }
+-                if (PREF_URL_KEYED_ANONYMIZED_DATA.equals(key)) {
+-                    return UnifiedConsentServiceBridge.isUrlKeyedAnonymizedDataCollectionManaged(
+-                            getProfile());
+-                }
+                 return false;
+             }
+         };
+@@ -356,21 +222,9 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
+                 @Override
+                 public void updateDynamicPreferences(
+                         Context context, SettingsIndexData indexData, Profile profile) {
+-                    if (!shouldShowAllowSignIn(profile)) {
+-                        indexData.removeEntry(getUniqueId(PREF_ALLOW_SIGNIN));
+-                    }
+-
+                     if (!shouldShowContextualSearch()) {
+                         indexData.removeEntry(getUniqueId(PREF_CONTEXTUAL_SEARCH));
+                     }
+-
+-                    if (!shouldShowPriceTrackingAnnotations(profile)) {
+-                        indexData.removeEntry(getUniqueId(PREF_PRICE_TRACKING_ANNOTATIONS));
+-                    }
+-
+-                    if (!shouldShowPriceNotificationSection(profile)) {
+-                        indexData.removeEntry(getUniqueId(PREF_PRICE_NOTIFICATION_SECTION));
+-                    }
+                     if (!shouldShowUsageStatsReporting(UserPrefs.get(profile))) {
+                         indexData.removeEntry(getUniqueId(PREF_USAGE_STATS_REPORTING));
+                     }

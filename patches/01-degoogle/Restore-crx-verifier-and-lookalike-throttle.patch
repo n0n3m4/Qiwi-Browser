@@ -1,0 +1,257 @@
+From 271378774abc6bc515a7d0f202500b8d3a3ed764 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 16:31:29 +0500
+Subject: [PATCH] Restore CRX verifier and lookalike URL throttle
+
+Partially reverts two cromite patches whose collateral weakened
+security once extensions are enabled:
+
+- Enable-component-updater had skipped the CRX ID / required-key
+  check on Android and swapped the publisher key for Cromite's, so a
+  crafted .crx could claim an installed extension's ID. crx_verifier
+  is back to vanilla; the is_extension parameter that only selected
+  the key is removed from all callers.
+- Disable-various-metrics had dropped LookalikeUrlNavigationThrottle
+  together with the metrics throttle. The lookalike check is local
+  (bundled list, no network) and is registered again.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ ...ent_browser_client_navigation_throttles.cc |  3 ++
+ .../elevated_recovery_impl.cc                 |  2 +-
+ components/crx_file/crx_verifier.cc           | 28 ++++---------------
+ components/crx_file/crx_verifier.h            |  2 +-
+ .../prediction_model_download_manager.cc      |  2 +-
+ components/update_client/op_install.cc        |  2 +-
+ components/update_client/unpacker.cc          |  7 ++---
+ components/update_client/unpacker.h           |  4 +--
+ extensions/browser/sandboxed_unpacker.cc      |  2 +-
+ 9 files changed, 17 insertions(+), 35 deletions(-)
+
+diff --git a/chrome/browser/chrome_content_browser_client_navigation_throttles.cc b/chrome/browser/chrome_content_browser_client_navigation_throttles.cc
+index 8ddbade9e2..14e669543e 100644
+--- a/chrome/browser/chrome_content_browser_client_navigation_throttles.cc
++++ b/chrome/browser/chrome_content_browser_client_navigation_throttles.cc
+@@ -19,6 +19,7 @@
+ #include "chrome/browser/glic/glic_navigation_throttle.h"
+ #include "chrome/browser/history/history_service_factory.h"
+ #include "chrome/browser/interstitials/enterprise_util.h"
++#include "chrome/browser/lookalikes/lookalike_url_navigation_throttle.h"
+ #include "chrome/browser/omnibox/geolocation_navigation_throttle.h"
+ #include "chrome/browser/plugins/pdf_iframe_navigation_throttle.h"
+ #include "chrome/browser/policy/chrome_policy_blocklist_service_factory.h"
+@@ -394,6 +395,8 @@ void CreateAndAddChromeThrottlesForNavigation(
+     throttle_manager->MaybeCreateAndAddNavigationThrottles(registry);
+   }
+ 
++  LookalikeUrlNavigationThrottle::MaybeCreateAndAdd(registry);
++
+   PDFIFrameNavigationThrottle::MaybeCreateAndAdd(registry);
+ 
+ #if BUILDFLAG(ENABLE_PDF)
+diff --git a/chrome/elevation_service/elevated_recovery_impl.cc b/chrome/elevation_service/elevated_recovery_impl.cc
+index 44c36f9a1d..44d717a544 100644
+--- a/chrome/elevation_service/elevated_recovery_impl.cc
++++ b/chrome/elevation_service/elevated_recovery_impl.cc
+@@ -197,7 +197,7 @@ HRESULT ValidateAndUnpackCRX(const base::FilePath& from_crx_path,
+ 
+   std::string public_key;
+   if (crx_file::Verify(to_crx_path, crx_format, {crx_hash}, {}, &public_key,
+-                       nullptr, /*compressed_verified_contents=*/nullptr, /* is_extension */ false) !=
++                       nullptr, /*compressed_verified_contents=*/nullptr) !=
+       crx_file::VerifierResult::OK_FULL) {
+     return CRYPT_E_NO_MATCH;
+   }
+diff --git a/components/crx_file/crx_verifier.cc b/components/crx_file/crx_verifier.cc
+index ed9fec89f7..f2f5de9042 100644
+--- a/components/crx_file/crx_verifier.cc
++++ b/components/crx_file/crx_verifier.cc
+@@ -16,7 +16,6 @@
+ #include <utility>
+ 
+ #include "base/base64.h"
+-#include "base/logging.h"
+ #include "base/feature.h"
+ #include "base/feature_list.h"
+ #include "base/files/file.h"
+@@ -46,12 +45,7 @@ BASE_FEATURE(kDisallowEocdRecord64TokensInCrx,
+              base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+ // The SHA256 hash of the DER SPKI "ecdsa_2017_public" Crx3 key.
+-constexpr KeyHash kPublisherKeyHashCromite = {
+-    0x9F, 0x4A, 0x10, 0x80, 0x0F, 0x84, 0x13, 0xCB, 0x8F, 0x69, 0x92,
+-    0xA6, 0x03, 0x44, 0x9D, 0xC5, 0xFE, 0x01, 0x4D, 0x00, 0xF3, 0x4E,
+-    0x16, 0x79, 0xA1, 0x81, 0x95, 0x77, 0x1C, 0x5A, 0x21, 0x24};
+-
+-constexpr KeyHash kPublisherKeyHashGoogle = {
++constexpr KeyHash kPublisherKeyHash = {
+     0x61, 0xf7, 0xf2, 0xa6, 0xbf, 0xcf, 0x74, 0xcd, 0x0b, 0xc1, 0xfe,
+     0x24, 0x97, 0xcc, 0x9b, 0x04, 0x25, 0x4c, 0x65, 0x8f, 0x79, 0xf2,
+     0x14, 0x53, 0x92, 0x86, 0x7e, 0xa8, 0x36, 0x63, 0x67, 0xcf};
+@@ -126,8 +120,7 @@ VerifierResult VerifyCrx3(
+     std::string* crx_id,
+     std::vector<uint8_t>* compressed_verified_contents,
+     bool require_publisher_key,
+-    bool accept_publisher_test_key,
+-    bool is_extension) {
++    bool accept_publisher_test_key) {
+   // Parse [header-size] and [header].
+   int header_size =
+       base::saturated_cast<int>(ReadAndHashLittleEndianUInt32(file, hash));
+@@ -215,18 +208,9 @@ VerifierResult VerifyCrx3(
+       }
+       auto key_hash = crypto::hash::Sha256(key);
+       required_key_set.erase(key_hash);
+-      auto kPublisherKey =
+-          is_extension ? kPublisherKeyHashGoogle : kPublisherKeyHashCromite;
+       found_publisher_key =
+-          found_publisher_key || key_hash == kPublisherKey ||
++          found_publisher_key || key_hash == kPublisherKeyHash ||
+           (accept_publisher_test_key && key_hash == kPublisherTestKeyHash);
+-
+-      LOG(INFO) << "---is_extension: " << is_extension;
+-      LOG(INFO) << "---key_hash: " << base::HexEncode(key_hash);
+-      LOG(INFO) << "---publisher_key: " << base::HexEncode(kPublisherKey);
+-      LOG(INFO) << "---found_publisher_key: " << found_publisher_key;
+-      LOG(INFO) << "---sig: " << sig;
+-      LOG(INFO) << "---key: " << key;
+       std::optional<crypto::keypair::PublicKey> pub_key =
+           crypto::keypair::PublicKey::FromSubjectPublicKeyInfo(
+               base::as_byte_span(key));
+@@ -253,11 +237,9 @@ VerifierResult VerifyCrx3(
+       verifiers.push_back(std::move(v));
+     }
+   }
+-#if !BUILDFLAG(IS_ANDROID)
+   if (public_key_bytes.empty() || !required_key_set.empty()) {
+     return VerifierResult::ERROR_REQUIRED_PROOF_MISSING;
+   }
+-#endif
+ 
+   if (require_publisher_key && !found_publisher_key) {
+     return VerifierResult::ERROR_REQUIRED_PROOF_MISSING;
+@@ -282,7 +264,7 @@ VerifierResult Verify(
+     const std::vector<uint8_t>& required_file_hash,
+     std::string* public_key,
+     std::string* crx_id,
+-    std::vector<uint8_t>* compressed_verified_contents, bool is_extension) {
++    std::vector<uint8_t>* compressed_verified_contents) {
+   std::string public_key_local;
+   std::string crx_id_local;
+   base::File file(crx_path, base::File::FLAG_OPEN | base::File::FLAG_READ);
+@@ -315,7 +297,7 @@ VerifierResult Verify(
+     result = VerifyCrx3(
+         &file, file_hash, required_key_hashes, &public_key_local, &crx_id_local,
+         compressed_verified_contents, require_publisher_key,
+-        format == VerifierFormat::CRX3_WITH_TEST_PUBLISHER_PROOF, is_extension);
++        format == VerifierFormat::CRX3_WITH_TEST_PUBLISHER_PROOF);
+   } else {
+     result = VerifierResult::ERROR_HEADER_INVALID;
+   }
+diff --git a/components/crx_file/crx_verifier.h b/components/crx_file/crx_verifier.h
+index 4594b676bf..0bf25996e1 100644
+--- a/components/crx_file/crx_verifier.h
++++ b/components/crx_file/crx_verifier.h
+@@ -51,7 +51,7 @@ VerifierResult Verify(
+     const std::vector<uint8_t>& required_file_hash,
+     std::string* public_key,
+     std::string* crx_id,
+-    std::vector<uint8_t>* compressed_verified_contents, bool is_extension);
++    std::vector<uint8_t>* compressed_verified_contents);
+ 
+ }  // namespace crx_file
+ 
+diff --git a/components/optimization_guide/core/delivery/prediction_model_download_manager.cc b/components/optimization_guide/core/delivery/prediction_model_download_manager.cc
+index 729c66efd8..54ed48da3c 100644
+--- a/components/optimization_guide/core/delivery/prediction_model_download_manager.cc
++++ b/components/optimization_guide/core/delivery/prediction_model_download_manager.cc
+@@ -320,7 +320,7 @@ bool PredictionModelDownloadManager::VerifyDownload(
+         download_file_path, crx_file::VerifierFormat::CRX3,
+         /*required_key_hashes=*/{},
+         /*required_file_hash=*/{}, &public_key,
+-        /*crx_id=*/nullptr, /*compressed_verified_contents=*/nullptr, /* is_extension */ false);
++        /*crx_id=*/nullptr, /*compressed_verified_contents=*/nullptr);
+     if (verifier_result != crx_file::VerifierResult::OK_FULL) {
+       RecordPredictionModelDownloadStatus(
+           PredictionModelDownloadStatus::kFailedCrxVerification);
+diff --git a/components/update_client/op_install.cc b/components/update_client/op_install.cc
+index 75bb3ee9b7..b572544ee6 100644
+--- a/components/update_client/op_install.cc
++++ b/components/update_client/op_install.cc
+@@ -202,7 +202,7 @@ void Unpack(base::OnceCallback<void(const Unpacker::Result&)> callback,
+               &Unpacker::Unpack, id, prod_id, pk_hash,
+               // If and only if cached, the original path no longer exists.
+               cache_result.has_value() ? cache_result.value() : crx_file,
+-              std::move(unzipper), /*is_extension*/ false, crx_format, is_foreground,
++              std::move(unzipper), crx_format, is_foreground,
+               base::BindPostTaskToCurrentDefault(std::move(callback))));
+ }
+ 
+diff --git a/components/update_client/unpacker.cc b/components/update_client/unpacker.cc
+index dc292224f3..b0d12e3a06 100644
+--- a/components/update_client/unpacker.cc
++++ b/components/update_client/unpacker.cc
+@@ -72,17 +72,16 @@ void Unpacker::Unpack(const std::string& app_id,
+                       const std::vector<uint8_t>& pk_hash,
+                       const base::FilePath& path,
+                       std::unique_ptr<Unzipper> unzipper,
+-                      bool is_extension,
+                       crx_file::VerifierFormat crx_format,
+                       bool is_foreground,
+                       base::OnceCallback<void(const Result& result)> callback) {
+   base::WrapRefCounted(new Unpacker(app_id, prod_id, path, std::move(unzipper),
+                                     is_foreground, std::move(callback)))
+-      ->Verify(pk_hash, crx_format, is_extension);
++      ->Verify(pk_hash, crx_format);
+ }
+ 
+ void Unpacker::Verify(const std::vector<uint8_t>& pk_hash,
+-                      crx_file::VerifierFormat crx_format, bool is_extension) {
++                      crx_file::VerifierFormat crx_format) {
+   TRACE_EVENT("update_client", "Unpacker::Verify",
+               perfetto::Flow::FromPointer(this));
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+@@ -97,7 +96,7 @@ void Unpacker::Verify(const std::vector<uint8_t>& pk_hash,
+   }
+   const crx_file::VerifierResult result = crx_file::Verify(
+       path_, crx_format, required_keys, std::vector<uint8_t>(), &public_key_,
+-      /*crx_id=*/nullptr, &compressed_verified_contents_, is_extension);
++      /*crx_id=*/nullptr, &compressed_verified_contents_);
+   if (result != crx_file::VerifierResult::OK_FULL) {
+     EndUnpacking(UnpackerError::kInvalidFile, static_cast<int>(result));
+     return;
+diff --git a/components/update_client/unpacker.h b/components/update_client/unpacker.h
+index b96828918b..f9a043909b 100644
+--- a/components/update_client/unpacker.h
++++ b/components/update_client/unpacker.h
+@@ -75,7 +75,6 @@ class Unpacker : public base::RefCountedThreadSafe<Unpacker> {
+                      const std::vector<uint8_t>& pk_hash,
+                      const base::FilePath& path,
+                      std::unique_ptr<Unzipper> unzipper,
+-                     bool is_extension,
+                      crx_file::VerifierFormat crx_format,
+                      bool is_foreground,
+                      base::OnceCallback<void(const Result& result)> callback);
+@@ -100,8 +99,7 @@ class Unpacker : public base::RefCountedThreadSafe<Unpacker> {
+   // `BeginUnzipping` if successful. Triggers `EndUnpacking` if an early error
+   // is encountered.
+   void Verify(const std::vector<uint8_t>& pk_hash,
+-              crx_file::VerifierFormat crx_format,
+-              bool is_extension);
++              crx_file::VerifierFormat crx_format);
+ 
+   // The next step of unpacking is to unzip. Triggers `EndUnzipping` if
+   // successful. Triggers `EndUnpacking` if an early error is encountered.
+diff --git a/extensions/browser/sandboxed_unpacker.cc b/extensions/browser/sandboxed_unpacker.cc
+index b3a247ca28..f590c5f00a 100644
+--- a/extensions/browser/sandboxed_unpacker.cc
++++ b/extensions/browser/sandboxed_unpacker.cc
+@@ -915,7 +915,7 @@ bool SandboxedUnpacker::ValidateSignature(
+ 
+   const crx_file::VerifierResult result = crx_file::Verify(
+       crx_path, required_format, std::vector<std::vector<uint8_t>>(), hash,
+-      &public_key_, &extension_id_, &compressed_verified_contents_, /* is_extension */ true);
++      &public_key_, &extension_id_, &compressed_verified_contents_);
+ 
+   switch (result) {
+     case crx_file::VerifierResult::OK_FULL: {

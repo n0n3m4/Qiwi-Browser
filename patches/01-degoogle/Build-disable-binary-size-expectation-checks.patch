@@ -1,0 +1,46 @@
+From ca4e028d37a5bd584ac0ca33986fdc656008170b Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 10:33:34 +0500
+Subject: [PATCH] Build: turn off the binary-size expectation checks
+
+chrome/android/expectations/expectations.gni enables manifest and
+libs-and-assets verification whenever android_channel == "stable" on
+arm64/x64. The resulting //chrome/android:validate_expectations group
+depends on trichrome and system-webview bundle targets that do not resolve
+in our x64 dev configuration, so `gn gen` failed with "Unresolved
+dependencies" as soon as gn_args/common.gn set the stable channel. The
+checks exist for Chromium's android-binary-size trybot and compare against
+expectation files this fork does not maintain; both flags are now false.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ chrome/android/expectations/expectations.gni | 14 +++++---------
+ 1 file changed, 5 insertions(+), 9 deletions(-)
+
+diff --git a/chrome/android/expectations/expectations.gni b/chrome/android/expectations/expectations.gni
+index 7f7fdb9d10..44214295c7 100644
+--- a/chrome/android/expectations/expectations.gni
++++ b/chrome/android/expectations/expectations.gni
+@@ -6,17 +6,13 @@ import("//build/config/android/config.gni")
+ import("//build/config/coverage/coverage.gni")
+ 
+ # Chosen to match android-binary-size trybot.
+-enable_libs_and_assets_verification =
+-    !enable_chrome_android_internal && !is_component_build &&
+-    !use_jacoco_coverage && is_official_build &&
+-    ((target_cpu == "arm64" || target_cpu == "x64") &&
+-     android_channel == "stable")
++# Binary-size trybot checks: they need the trichrome/webview bundle targets
++# (gn fails on x64 with android_channel="stable") and this fork does not
++# maintain expectation files.
++enable_libs_and_assets_verification = false
+ 
+ # enable_chrome_android_internal: Manifest merging of play services deps vary.
+ # use_jacoco_coverage: Adds proguard flags.
+ # android_channel: Manifest entries vary based on channel.
+ # target_cpu: android:versionCode varies.
+-enable_manifest_verification =
+-    !is_java_debug && !enable_chrome_android_internal && !use_jacoco_coverage &&
+-    ((target_cpu == "arm64" || target_cpu == "x64") &&
+-     android_channel == "stable")
++enable_manifest_verification = false

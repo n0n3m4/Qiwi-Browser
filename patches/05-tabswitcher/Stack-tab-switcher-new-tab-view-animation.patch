@@ -1,0 +1,45 @@
+From 715e9686fad6c1b4fbbba1be56d38f1fbe5204bf Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 11:48:01 +0500
+Subject: [PATCH] Stack tab switcher: fade the new NTP in like M90
+
+"+ New tab" in the stack ran the compositor NEW_TAB_OPENED animation,
+which scrolls a card for the new tab to full screen. A new NTP has never
+been drawn, so that card was empty: the user saw a blank white page and
+then the NTP popping in. M90 used StackViewAnimation for this case
+instead (the NTP's own view, borrowed into the layout's view container,
+fades in over 350 ms while sliding down 20 dp). It was ported but kept
+off; 153's CompositorViewHolder#updateContentOverlayVisibility still
+takes the view back from that temporary parent, so turn it on.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../browser/compositor/layouts/phone/stack/Stack.java     | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/stack/Stack.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/stack/Stack.java
+index df073e860d..29f6cf3c6b 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/stack/Stack.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/stack/Stack.java
+@@ -129,7 +129,7 @@ public abstract class Stack {
+     private static final boolean ENABLE_FULL_ROLL = false;
+ 
+     /** Whether Android-view animations (StackViewAnimation) may run. See startAnimation(). */
+-    private static final boolean ENABLE_VIEW_ANIMATIONS = false;
++    private static final boolean ENABLE_VIEW_ANIMATIONS = true;
+ 
+     // External References
+     protected TabList mTabList;
+@@ -503,9 +503,9 @@ public abstract class Stack {
+ 
+             // First try to build a View animation.  Then fallback to the compositor animation
+             // if one isn't created.
+-            // TODO(stack): StackViewAnimation reparents the NTP's Android view into the layout's
+-            // view container for the new-tab animation. 153's NTP/CompositorViewHolder do not
+-            // expect that, so it stays off until verified on device.
++            // StackViewAnimation borrows the new NTP's view into the layout's view container (an
++            // empty compositor card otherwise); CompositorViewHolder#updateContentOverlayVisibility
++            // takes it back when the tab is shown.
+             mViewAnimations = ENABLE_VIEW_ANIMATIONS
+                     ? mViewAnimationFactory.createAnimatorForType(
+                             type, mStackTabs, mLayout.getViewContainer(), mTabList, focusIndex)

@@ -1,0 +1,30 @@
+From cc3c0acfcde19b8d4081cad1da7302845f31cb6b Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 02:38:58 +0500
+Subject: [PATCH] Drop playcore_java dep from webview captured_sites_tests
+ (removed by Remove-binary-blob-integrations)
+
+---
+ android_webview/tools/captured_sites_tests/BUILD.gn | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/android_webview/tools/captured_sites_tests/BUILD.gn b/android_webview/tools/captured_sites_tests/BUILD.gn
+index 837a36607e..96feaa142d 100644
+--- a/android_webview/tools/captured_sites_tests/BUILD.gn
++++ b/android_webview/tools/captured_sites_tests/BUILD.gn
+@@ -43,7 +43,6 @@ robolectric_binary("captured_sites_junit_tests") {
+     "//base:base_java_test_support",
+     "//base:base_junit_test_support",
+     "//third_party/android_deps:espresso_java",
+-    "//third_party/android_deps:playcore_java",
+     "//third_party/androidx:androidx_annotation_annotation_java",
+     "//third_party/androidx:androidx_test_monitor_java",
+     "//third_party/androidx:androidx_test_runner_java",
+@@ -90,7 +89,6 @@ instrumentation_test_apk("webview_captured_sites_test_apk") {
+     "//base:base_java",
+     "//base:base_java_test_support",
+     "//third_party/android_deps:espresso_java",
+-    "//third_party/android_deps:playcore_java",
+     "//third_party/androidx:androidx_annotation_annotation_java",
+     "//third_party/androidx:androidx_test_monitor_java",
+     "//third_party/androidx:androidx_test_runner_java",

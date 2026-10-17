@@ -1,0 +1,149 @@
+From ea9a8d066f1d1f6abfa97ef7cb45bc60400eb90c Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 10:01:36 +0500
+Subject: [PATCH] Stack tab switcher: favicon and title on each card
+
+Create a LayerTitleCache for phones in LayoutManagerChromePhone and hand it to StackLayoutBase so
+TabLayer draws the favicon + title strip like Chromium 90 (text height capped by toolbar_height_no_shadow,
+since tab_strip_height is 0dp on phones).
+---
+ .../layouts/LayoutManagerChromePhone.java     | 34 +++++++++++++++++++
+ .../layouts/phone/StackLayoutBase.java        |  7 +++-
+ .../android/compositor/layer/tab_layer.cc     |  6 ++--
+ .../android/compositor/layer/tab_layer.h      |  2 +-
+ .../scene_layer/tab_list_scene_layer.h        |  2 +-
+ 5 files changed, 45 insertions(+), 6 deletions(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChromePhone.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChromePhone.java
+index c3d44ffc59..59d254ac31 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChromePhone.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerChromePhone.java
+@@ -16,7 +16,9 @@ import org.chromium.base.supplier.NonNullObservableSupplier;
+ import org.chromium.build.annotations.Initializer;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
++import org.chromium.chrome.R;
+ import org.chromium.chrome.browser.compositor.CompositorViewHolder;
++import org.chromium.chrome.browser.compositor.LayerTitleCache;
+ import org.chromium.chrome.browser.compositor.layouts.phone.NewTabAnimationLayout;
+ import org.chromium.chrome.browser.compositor.layouts.phone.StackLayout;
+ import org.chromium.chrome.browser.flags.ChromeSwitches;
+@@ -54,6 +56,9 @@ public class LayoutManagerChromePhone extends LayoutManagerChrome {
+     /** The classic stack tab switcher; serves {@link LayoutType#HUB} when enabled. */
+     private @Nullable StackLayout mStackLayout;
+ 
++    /** Title/favicon textures for the stack cards (tablets build their own for the strip). */
++    private @Nullable LayerTitleCache mLayerTitleCache;
++
+     /**
+      * Creates an instance of a {@link LayoutManagerChromePhone}.
+      *
+@@ -108,6 +113,10 @@ public class LayoutManagerChromePhone extends LayoutManagerChrome {
+             mStackLayout.destroy();
+             mStackLayout = null;
+         }
++        if (mLayerTitleCache != null) {
++            mLayerTitleCache.shutDown();
++            mLayerTitleCache = null;
++        }
+     }
+ 
+     @Override
+@@ -160,9 +169,34 @@ public class LayoutManagerChromePhone extends LayoutManagerChrome {
+         stackLayout.setTabModelSelector(selector);
+         stackLayout.setTabContentManager(tabContentManager);
+         stackLayout.onFinishNativeInitialization();
++        // Card titles reuse the tablet strip's title cache. The height argument only caps the
++        // text size; tab_strip_height is 0dp on phones (which shrinks the text to nothing), so
++        // cap at the toolbar height instead.
++        mLayerTitleCache =
++                new LayerTitleCache(
++                        context,
++                        getResourceManager(),
++                        context.getResources()
++                                .getDimensionPixelSize(R.dimen.toolbar_height_no_shadow),
++                        selector);
++        stackLayout.setLayerTitleCache(mLayerTitleCache);
+         mStackLayout = stackLayout;
+     }
+ 
++    @Override
++    public void initLayoutTabFromHost(int tabId) {
++        // As in M90: drop the cached title so the next frame rebuilds it lazily with the tab's
++        // current title/favicon.
++        if (mLayerTitleCache != null) mLayerTitleCache.removeTabTitle(tabId);
++        super.initLayoutTabFromHost(tabId);
++    }
++
++    @Override
++    public void releaseResourcesForTab(int tabId) {
++        super.releaseResourcesForTab(tabId);
++        if (mLayerTitleCache != null) mLayerTitleCache.removeTabTitle(tabId);
++    }
++
+     @Override
+     protected boolean shouldUseStackLayout() {
+         if (mStackLayout == null) return false;
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
+index 0aa6a36722..fcf475d2b0 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/phone/StackLayoutBase.java
+@@ -258,9 +258,14 @@ public abstract class StackLayoutBase extends Layout {
+     /** Replaces M90's Layout#onTabModelSwitched. */
+     private final Callback<TabModel> mCurrentTabModelObserver = this::onCurrentTabModelChanged;
+ 
+-    /** Titles on cards (phase 2). Phones have no LayerTitleCache today, so this stays null. */
++    /** Title/favicon textures for the card header strip; set by LayoutManagerChromePhone. */
+     protected @Nullable LayerTitleCache mLayerTitleCache;
+ 
++    /** @param layerTitleCache The cache that builds the card title layers, or null for none. */
++    public void setLayerTitleCache(@Nullable LayerTitleCache layerTitleCache) {
++        mLayerTitleCache = layerTitleCache;
++    }
++
+     private class StackLayoutGestureHandler implements MotionEventHandler {
+         @Override
+         public void onDown(float x, float y, int buttons) {
+diff --git a/chrome/browser/android/compositor/layer/tab_layer.cc b/chrome/browser/android/compositor/layer/tab_layer.cc
+index e6fa82c15d..11de73e5e3 100644
+--- a/chrome/browser/android/compositor/layer/tab_layer.cc
++++ b/chrome/browser/android/compositor/layer/tab_layer.cc
+@@ -382,9 +382,9 @@ void TabLayer::SetProperties(int id,
+ 
+   // TODO(dtrainor): Improve these calculations to prune these layers out.
+   bool title_visible = border_alpha > 0.f && show_tab_title;
+-  // TODO(stack): M90 tied the close button to the title. Phones have no
+-  // LayerTitleCache yet (titles are phase 2), so draw the close button
+-  // whenever the border is visible; Java gates the hit area the same way.
++  // TODO(stack): M90 tied the close button to the title. Keep drawing it
++  // whenever the border is visible (Java gates the hit area the same way), so
++  // it survives a null LayerTitleCache or a card with the title hidden.
+   bool close_btn_visible = border_alpha > 0.f;
+   bool toolbar_visible = show_toolbar && toolbar_alpha > 0.f;
+ 
+diff --git a/chrome/browser/android/compositor/layer/tab_layer.h b/chrome/browser/android/compositor/layer/tab_layer.h
+index b73bdb780b..31a8d545c8 100644
+--- a/chrome/browser/android/compositor/layer/tab_layer.h
++++ b/chrome/browser/android/compositor/layer/tab_layer.h
+@@ -118,7 +118,7 @@ class TabLayer : public Layer {
+ 
+   const bool incognito_;
+   raw_ptr<ui::ResourceManager> resource_manager_;
+-  // May be null: phones have no LayerTitleCache (titles are phase 2).
++  // May be null; then the header strip shows no title/favicon.
+   raw_ptr<LayerTitleCache> layer_title_cache_;
+ 
+   // [layer]-+-[toolbar]
+diff --git a/chrome/browser/android/compositor/scene_layer/tab_list_scene_layer.h b/chrome/browser/android/compositor/scene_layer/tab_list_scene_layer.h
+index d1c59c6a9b..70a38aa670 100644
+--- a/chrome/browser/android/compositor/scene_layer/tab_list_scene_layer.h
++++ b/chrome/browser/android/compositor/scene_layer/tab_list_scene_layer.h
+@@ -100,7 +100,7 @@ class TabListSceneLayer : public SceneLayer {
+                    float side_border_scale,
+                    bool inset_border);
+ 
+-  // |jlayer_title_cache| may be null (phones have no LayerTitleCache).
++  // |jlayer_title_cache| may be null (no titles drawn then).
+   void SetDependencies(
+       JNIEnv* env,
+       const base::android::JavaRef<jobject>& jtab_content_manager,

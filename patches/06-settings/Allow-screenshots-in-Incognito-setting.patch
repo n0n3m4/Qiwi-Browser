@@ -1,0 +1,137 @@
+From 3a8705ad1de6da87b3556cc3d4ba4a8a6fb0ad49 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 16:31:36 +0500
+Subject: [PATCH] Add "Allow screenshots in Incognito" setting
+
+Settings > Privacy and security, below the Incognito lock. Backed by
+the Chrome.Incognito.AllowScreenshots shared preference (default off =
+stock FLAG_SECURE behaviour). When on, IncognitoSnapshotController
+behaves as with the IncognitoScreenshot feature flag: FLAG_SECURE is
+cleared, so screenshots and screen recording capture Incognito tabs.
+On Android 13+ the Recents preview stays disabled, as upstream does.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ chrome/android/java/res/xml/privacy_preferences.xml  |  5 +++++
+ .../incognito/IncognitoSnapshotController.java       |  6 +++++-
+ .../browser/privacy/settings/PrivacySettings.java    | 12 ++++++++++++
+ .../browser/preferences/ChromePreferenceKeys.java    |  4 ++++
+ .../ui/android/strings/android_chrome_strings.grd    |  6 ++++++
+ 5 files changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/android/java/res/xml/privacy_preferences.xml b/chrome/android/java/res/xml/privacy_preferences.xml
+index 68be69cdbd..d02ffdd6b6 100644
+--- a/chrome/android/java/res/xml/privacy_preferences.xml
++++ b/chrome/android/java/res/xml/privacy_preferences.xml
+@@ -42,6 +42,11 @@ found in the LICENSE file.
+         android:title="@string/settings_incognito_tab_lock_title"
+         android:summary="@string/settings_incognito_tab_lock_summary_android_setting_off"
+         android:persistent="false" />
++    <org.chromium.components.browser_ui.settings.ChromeSwitchPreference
++        android:key="incognito_screenshots"
++        android:title="@string/settings_incognito_screenshots_title"
++        android:summary="@string/settings_incognito_screenshots_summary"
++        android:persistent="false" />
+ 
+     <PreferenceCategory
+         android:key="security_section"
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoSnapshotController.java b/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoSnapshotController.java
+index dd7c2de498..a135912976 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoSnapshotController.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/incognito/IncognitoSnapshotController.java
+@@ -11,6 +11,8 @@ import android.view.WindowManager;
+ 
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.chrome.browser.flags.ChromeFeatureList;
++import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
++import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+ 
+ import java.util.function.Supplier;
+ 
+@@ -47,7 +49,9 @@ public abstract class IncognitoSnapshotController {
+                         == WindowManager.LayoutParams.FLAG_SECURE;
+ 
+         boolean expectedSecureState = mIsShowingIncognitoSupplier.get();
+-        if (ChromeFeatureList.sIncognitoScreenshot.isEnabled()) {
++        if (ChromeFeatureList.sIncognitoScreenshot.isEnabled()
++                || ChromeSharedPreferences.getInstance()
++                        .readBoolean(ChromePreferenceKeys.INCOGNITO_ALLOW_SCREENSHOTS, false)) {
+             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                 mActivity.setRecentsScreenshotEnabled(!expectedSecureState);
+             }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettings.java b/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettings.java
+index cfe25c2eae..72ec028ab1 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettings.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettings.java
+@@ -97,6 +97,7 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
+     private static final String PREF_SYNC_AND_SERVICES_LINK = "sync_and_services_link";
+     private static final String PREF_PRIVACY_GUIDE = "privacy_guide";
+     private static final String PREF_INCOGNITO_LOCK = "incognito_lock";
++    private static final String PREF_INCOGNITO_SCREENSHOTS = "incognito_screenshots";
+     private static final String PREF_JAVASCRIPT_OPTIMIZER = "javascript_optimizer";
+     @VisibleForTesting static final String PREF_DO_NOT_TRACK = "do_not_track";
+     @VisibleForTesting static final String PREF_THIRD_PARTY_COOKIES = "third_party_cookies";
+@@ -175,6 +176,13 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
+         mIncognitoLockSettings = new IncognitoLockSettings(incognitoReauthPreference, getProfile());
+         mIncognitoLockSettings.setUpIncognitoReauthPreference(getActivity());
+ 
++        ChromeSwitchPreference incognitoScreenshotsPref =
++                (ChromeSwitchPreference) findPreference(PREF_INCOGNITO_SCREENSHOTS);
++        incognitoScreenshotsPref.setChecked(
++                ChromeSharedPreferences.getInstance()
++                        .readBoolean(ChromePreferenceKeys.INCOGNITO_ALLOW_SCREENSHOTS, false));
++        incognitoScreenshotsPref.setOnPreferenceChangeListener(this);
++
+         maybeShowAdvancedProtectionSection();
+ 
+         Preference safeBrowsingPreference = findPreference(PREF_SAFE_BROWSING);
+@@ -352,6 +360,10 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
+         } else if (PREF_PASSWORD_LEAK_DETECTION.equals(key)) {
+             UserPrefs.get(getProfile())
+                     .setBoolean(Pref.PASSWORD_LEAK_DETECTION_ENABLED, (boolean) newValue);
++        } else if (PREF_INCOGNITO_SCREENSHOTS.equals(key)) {
++            ChromeSharedPreferences.getInstance()
++                    .writeBoolean(
++                            ChromePreferenceKeys.INCOGNITO_ALLOW_SCREENSHOTS, (boolean) newValue);
+         }
+         return true;
+     }
+diff --git a/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/ChromePreferenceKeys.java b/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/ChromePreferenceKeys.java
+index 396c76b625..4d62a28e00 100644
+--- a/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/ChromePreferenceKeys.java
++++ b/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/ChromePreferenceKeys.java
+@@ -495,6 +495,9 @@ public final class ChromePreferenceKeys {
+     public static final String IMAGE_DESCRIPTIONS_DONT_ASK_AGAIN =
+             "Chrome.ImageDescriptions.DontAskAgain";
+ 
++    /** Whether the user allowed screenshots (no FLAG_SECURE) of Incognito tabs. Default false. */
++    public static final String INCOGNITO_ALLOW_SCREENSHOTS = "Chrome.Incognito.AllowScreenshots";
++
+     public static final String INCOGNITO_SHORTCUT_ADDED = "incognito-shortcut-added";
+ 
+     /** Indicates how many times the Incognito re-auth promo card was shown in the tab switcher. */
+@@ -1282,6 +1285,7 @@ public final class ChromePreferenceKeys {
+                 HOMEPAGE_SELECTION_POLICY_STATE,
+                 IMAGE_DESCRIPTIONS_JUST_ONCE_COUNT,
+                 IMAGE_DESCRIPTIONS_DONT_ASK_AGAIN,
++                INCOGNITO_ALLOW_SCREENSHOTS,
+                 INCOGNITO_REAUTH_PROMO_CARD_ENABLED,
+                 INCOGNITO_REAUTH_PROMO_SHOW_COUNT,
+                 IS_CHROME_DEFAULT_SEARCH_ENGINE_GOOGLE,
+diff --git a/chrome/browser/ui/android/strings/android_chrome_strings.grd b/chrome/browser/ui/android/strings/android_chrome_strings.grd
+index 894db59d17..867255a16e 100644
+--- a/chrome/browser/ui/android/strings/android_chrome_strings.grd
++++ b/chrome/browser/ui/android/strings/android_chrome_strings.grd
+@@ -375,6 +375,12 @@ CHAR_LIMIT guidelines:
+       <message name ="IDS_SETTINGS_INCOGNITO_TAB_LOCK_SUMMARY_ANDROID_SETTING_OFF" desc = "Summary for the Incognito tab lock toggle in Settings which asks the user to turn on screen lock in Android settings if it's off. Clicking on the text takes the user to Android settings.">
+         <ph name="BEGIN_LINK">&lt;link&gt;</ph>Turn on screen lock in Android settings<ph name="END_LINK">&lt;/link&gt;</ph>
+       </message>
++      <message name="IDS_SETTINGS_INCOGNITO_SCREENSHOTS_TITLE" desc="Title for a toggle in Settings that allows screenshots and screen recording while Incognito tabs are visible.">
++        Allow screenshots in Incognito
++      </message>
++      <message name="IDS_SETTINGS_INCOGNITO_SCREENSHOTS_SUMMARY" desc="Summary for the toggle in Settings that allows screenshots and screen recording while Incognito tabs are visible.">
++        Lets screenshots and screen recording capture Incognito tabs
++      </message>
+       <message name="IDS_PREFS_SECTION_PRELOAD_PAGES_TITLE" desc="Title for the Preload Pages section. This section allows the user to control whether Chrome will preload pages that it thinks the user is likely to load in the future. [CHAR_LIMIT=32]">
+         Preload Pages
+       </message>

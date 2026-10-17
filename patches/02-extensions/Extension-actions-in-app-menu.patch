@@ -1,0 +1,423 @@
+From 5358fd040e3181993cfdd66a85a9d7ec2d4e3846 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 11:20:11 +0500
+Subject: [PATCH] Extensions: Kiwi-style app-menu integration on phones
+
+No extension buttons in the phone toolbar (coordinator kept for the bridge/popups, container hidden).
+'Extensions' app-menu row always opens chrome://extensions. One app-menu row per extension action
+(name + untinted icon) appended at the end of the menu; tapping runs the action: popup anchored to
+the app-menu button, or onClicked when there is no popup.
+---
+ chrome/android/java/res/values/ids.xml        |  2 +
+ .../chrome/browser/ChromeTabbedActivity.java  | 31 ++++++----
+ .../TabbedAppMenuPropertiesDelegate.java      | 56 ++++++++++++++++++-
+ .../ExtensionActionListCoordinator.java       |  5 ++
+ .../ExtensionActionListMediator.java          | 36 +++++++++---
+ .../ExtensionsToolbarCoordinator.java         | 19 +++++++
+ .../ExtensionsToolbarCoordinatorImpl.java     | 39 +++++++++++++
+ .../browser/toolbar/top/ToolbarPhone.java     | 19 ++-----
+ 8 files changed, 171 insertions(+), 36 deletions(-)
+
+diff --git a/chrome/android/java/res/values/ids.xml b/chrome/android/java/res/values/ids.xml
+index 157ce8357e..b1b3c0b76d 100644
+--- a/chrome/android/java/res/values/ids.xml
++++ b/chrome/android/java/res/values/ids.xml
+@@ -222,6 +222,8 @@ found in the LICENSE file.
+     <item type="id" name="listen_to_feed_id" />
+     <item type="id" name="manage_all_windows_menu_id" />
+     <item type="id" name="manage_extensions_menu_id" />
++    <!-- kiwi: one app menu row per extension action, all sharing this id. -->
++    <item type="id" name="extension_action_menu_id" />
+     <item type="id" name="managed_by_divider_line_id" />
+     <item type="id" name="managed_by_menu_id" />
+     <item type="id" name="menu_item_content_filter_divider_line_id" />
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+index 2041568299..8a8aea3f4e 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+@@ -4501,21 +4501,28 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+                 RecordUserAction.record("MobileMenuRecentEntry");
+             }
+         } else if (id == R.id.extensions_menu_menu_id) {
++            // kiwi: the toolbar puzzle button is hidden on phones; always open the manager page.
++            getTabCreator(/* incognito= */ false)
++                    .createNewTab(
++                            new LoadUrlParams(
++                                    UrlConstants.CHROME_EXTENSIONS_URL,
++                                    PageTransition.AUTO_TOPLEVEL),
++                            TabLaunchType.FROM_CHROME_UI,
++                            getCurrentTabModel().isIncognito() ? null : currentTab);
++            RecordUserAction.record("MobileMenuExtensionsMenu");
++        } else if (id == R.id.extension_action_menu_id) {
++            // kiwi: extension action row; opens its popup or fires onClicked.
+             ExtensionsToolbarCoordinator coordinator =
+                     getToolbarManager().getExtensionsToolbarCoordinator();
+-            if (coordinator != null) {
+-                coordinator.showExtensionsMenu();
+-            } else {
+-                // kiwi: no extensions toolbar (e.g. no stub in layout); open the manager page.
+-                getTabCreator(/* incognito= */ false)
+-                        .createNewTab(
+-                                new LoadUrlParams(
+-                                        UrlConstants.CHROME_EXTENSIONS_URL,
+-                                        PageTransition.AUTO_TOPLEVEL),
+-                                TabLaunchType.FROM_CHROME_UI,
+-                                getCurrentTabModel().isIncognito() ? null : currentTab);
++            String actionId =
++                    menuItemData == null
++                            ? null
++                            : menuItemData.getString(
++                                    TabbedAppMenuPropertiesDelegate
++                                            .EXTENSION_ACTION_ID_BUNDLE_KEY);
++            if (coordinator != null && actionId != null) {
++                coordinator.executeActionFromMenu(actionId);
+             }
+-            RecordUserAction.record("MobileMenuExtensionsMenu");
+         } else if (id == R.id.manage_extensions_menu_id) {
+             LoadUrlParams params =
+                     new LoadUrlParams(
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+index 1b7271439d..055c79b4f0 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+@@ -8,7 +8,10 @@ import static org.chromium.build.NullUtil.assumeNonNull;
+ 
+ import android.content.Context;
+ import android.content.res.Resources;
++import android.graphics.Bitmap;
++import android.graphics.drawable.BitmapDrawable;
+ import android.graphics.drawable.Drawable;
++import android.os.Bundle;
+ import android.util.SparseArray;
+ import android.view.View;
+ 
+@@ -65,6 +68,7 @@ import org.chromium.chrome.browser.tab.Tab;
+ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+ import org.chromium.chrome.browser.task_manager.TaskManager;
+ import org.chromium.chrome.browser.toolbar.ToolbarManager;
++import org.chromium.chrome.browser.toolbar.extensions.ExtensionsToolbarCoordinator;
+ import org.chromium.chrome.browser.toolbar.menu_button.MenuItemState;
+ import org.chromium.chrome.browser.toolbar.top.ToolbarUtils;
+ import org.chromium.chrome.browser.ui.appmenu.AppMenuDelegate;
+@@ -99,7 +103,9 @@ import org.chromium.url.GURL;
+ import java.lang.annotation.Retention;
+ import java.lang.annotation.RetentionPolicy;
+ import java.util.ArrayList;
++import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ import java.util.function.BiFunction;
+ import java.util.function.BooleanSupplier;
+ import java.util.function.Supplier;
+@@ -589,6 +595,53 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
+             AppMenuItemUtils.maybeAddDividerLine(modelList, R.id.divider_line_id);
+             modelList.add(buildDefaultBrowserPromoItem());
+         }
++
++        // kiwi: one row per extension action at the end of the menu.
++        addExtensionActionItems(modelList);
++    }
++
++    /** Bundle key carrying the extension action ID of a row built by addExtensionActionItems. */
++    public static final String EXTENSION_ACTION_ID_BUNDLE_KEY = "ExtensionActionId";
++
++    // Rows of the last built menu -> action ID. Not a model key: STANDARD row views are recycled
++    // across models, which requires every STANDARD model to have the same key set.
++    private final Map<PropertyModel, String> mExtensionActionIds = new HashMap<>();
++
++    // kiwi: the list is read from the bridge on every menu build, so it follows installs/removals.
++    private void addExtensionActionItems(MVCListAdapter.ModelList modelList) {
++        mExtensionActionIds.clear();
++        if (!shouldShowExtensionsItem()) return;
++        ExtensionsToolbarCoordinator coordinator = mToolbarManager.getExtensionsToolbarCoordinator();
++        if (coordinator == null) return;
++        for (String actionId : coordinator.getActionIds()) {
++            Bitmap icon = coordinator.getActionIcon(actionId);
++            PropertyModel model =
++                    AppMenuItemUtils.buildBaseModelForTextItem(
++                                    getAppMenuItemTheme(),
++                                    R.id.extension_action_menu_id,
++                                    isMenuIconAtStart())
++                            .with(AppMenuItemProperties.TITLE, coordinator.getActionName(actionId))
++                            .with(
++                                    AppMenuItemProperties.ICON,
++                                    icon == null
++                                            ? null
++                                            : new BitmapDrawable(mContext.getResources(), icon))
++                            .with(AppMenuItemProperties.ICON_NO_TINT, true)
++                            .build();
++            mExtensionActionIds.put(model, actionId);
++            modelList.add(AppMenuItemUtils.createStandardListItem(model, /* showIcon= */ true));
++        }
++    }
++
++    @Override
++    public @Nullable Bundle getBundleForMenuItem(PropertyModel model) {
++        String actionId = mExtensionActionIds.get(model);
++        if (actionId != null) {
++            Bundle bundle = new Bundle();
++            bundle.putString(EXTENSION_ACTION_ID_BUNDLE_KEY, actionId);
++            return bundle;
++        }
++        return super.getBundleForMenuItem(model);
+     }
+ 
+     private void populatePageModeMenuWithSubmenus(
+@@ -1105,7 +1158,8 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
+                         mContext,
+                         getAppMenuItemTheme(),
+                         R.id.extensions_menu_menu_id,
+-                        R.string.menu_extensions_menu,
++                        // kiwi: the row opens chrome://extensions, so label it "Extensions".
++                        R.string.menu_extensions,
+                         showIcon ? R.drawable.ic_extension_24dp : Resources.ID_NULL,
+                         isMenuIconAtStart()),
+                 showIcon);
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListCoordinator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListCoordinator.java
+index d9da4869f7..636c321514 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListCoordinator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListCoordinator.java
+@@ -150,6 +150,11 @@ public class ExtensionActionListCoordinator implements Destroyable {
+         mMediator.executeUserAction(actionId, source);
+     }
+ 
++    /** kiwi: see {@link ExtensionActionListMediator#setFallbackAnchorRoot}. */
++    public void setFallbackAnchorRoot(View root) {
++        mMediator.setFallbackAnchorRoot(root);
++    }
++
+     /** Retrieves the button view representing the icon of a given extension. */
+     public @Nullable View getButtonViewForId(String actionId) {
+         for (int i = 0; i < mModels.size(); i++) {
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java
+index eee871e85a..4f2fa7f046 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java
+@@ -141,6 +141,10 @@ class ExtensionActionListMediator implements Destroyable {
+     private @Nullable String mHoverCardActionId;
+     private @Nullable Runnable mShowHoverCardRunnable;
+ 
++    // kiwi: view to search for the app menu button, used to anchor popups of actions that have
++    // no toolbar button (actions are run from the app menu on phones).
++    private @Nullable View mFallbackAnchorRoot;
++
+     private final ExtensionsToolbarBridge mExtensionsToolbarBridge;
+     private final ToolbarDelegate mToolbarDelegate = new ToolbarDelegate();
+     private final ToolbarObserver mToolbarObserver = new ToolbarObserver();
+@@ -682,6 +686,19 @@ class ExtensionActionListMediator implements Destroyable {
+         }
+     }
+ 
++    /** kiwi: anchor popups to the app menu button under {@code root} when no button exists. */
++    public void setFallbackAnchorRoot(@Nullable View root) {
++        mFallbackAnchorRoot = root;
++    }
++
++    private @Nullable View getAnchorViewForId(String actionId) {
++        View anchor = mRecyclerViewDelegate.getButtonViewForId(actionId);
++        if (anchor == null && mFallbackAnchorRoot != null) {
++            anchor = mFallbackAnchorRoot.findViewById(R.id.menu_button_wrapper);
++        }
++        return anchor;
++    }
++
+     private void requestShowPopup(
+             String actionId, long nativeHostPtr, boolean inspectWithDevTools) {
+         closeHoverCard();
+@@ -694,6 +711,12 @@ class ExtensionActionListMediator implements Destroyable {
+                         ExtensionActionPopupContents.create(nativeHostPtr, inspectWithDevTools),
+                         inspectWithDevTools);
+ 
++        if (mFallbackAnchorRoot != null
++                && mRecyclerViewDelegate.getButtonViewForId(actionId) == null) {
++            // kiwi: no toolbar button to pop out; show right away on the fallback anchor.
++            showPopupOnAnchor();
++            return;
++        }
+         requestActionVisibility(actionId, () -> showPopupOnAnchor());
+     }
+ 
+@@ -707,8 +730,7 @@ class ExtensionActionListMediator implements Destroyable {
+         ExtensionActionPopupContents contents = state.getContents();
+         boolean inspectWithDevTools = state.isInspectWithDevTools();
+ 
+-        ListMenuButton buttonView =
+-                (ListMenuButton) mRecyclerViewDelegate.getButtonViewForId(actionId);
++        View buttonView = getAnchorViewForId(actionId);
+         if (buttonView == null) {
+             contents.destroy();
+             mActionState = new ActionState.Idle();
+@@ -727,7 +749,7 @@ class ExtensionActionListMediator implements Destroyable {
+         // the "pressed" look while loading the action popup too. For context menu {@link
+         // ListMenuButton} already handles this, but not for popup where we show the window
+         // ourselves.
+-        buttonView.setIsPressed(true);
++        if (buttonView instanceof ListMenuButton button) button.setIsPressed(true);
+ 
+         ExtensionActionPopup popup =
+                 new ExtensionActionPopup(
+@@ -764,15 +786,11 @@ class ExtensionActionListMediator implements Destroyable {
+         mActionState = new ActionState.Idle();
+ 
+         ExtensionActionPopup popup = actionState.getPopup();
+-        ListMenuButton buttonView =
+-                (ListMenuButton)
+-                        mRecyclerViewDelegate.getButtonViewForId(actionState.getActionId());
++        View buttonView = getAnchorViewForId(actionState.getActionId());
+ 
+         popup.destroy();
+ 
+-        if (buttonView != null) {
+-            buttonView.setIsPressed(false);
+-        }
++        if (buttonView instanceof ListMenuButton button) button.setIsPressed(false);
+ 
+         undoPopout();
+     }
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinator.java
+index 5a04f26551..810712011f 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinator.java
+@@ -5,7 +5,9 @@
+ package org.chromium.chrome.browser.toolbar.extensions;
+ 
+ import android.content.Context;
++import android.graphics.Bitmap;
+ import android.view.KeyEvent;
++import android.view.View;
+ import android.view.ViewGroup;
+ import android.view.ViewStub;
+ 
+@@ -140,4 +142,21 @@ public interface ExtensionsToolbarCoordinator extends ChromeAndroidTaskFeature,
+ 
+     /** Returns the {@link ToolbarWidthConsumer} for the action list container. */
+     ToolbarWidthConsumer getActionListWidthConsumer();
++
++    // kiwi: actions are shown as app menu rows instead of toolbar buttons.
++
++    /** Hides the toolbar UI; popups anchor to the app menu button found under {@code root}. */
++    void moveActionsToAppMenu(View root);
++
++    /** Returns the IDs of all actions, in toolbar order. */
++    String[] getActionIds();
++
++    /** Returns the display name of an action. */
++    String getActionName(String actionId);
++
++    /** Returns the icon of an action for the current tab. */
++    @Nullable Bitmap getActionIcon(String actionId);
++
++    /** Runs an action as if chosen from a menu (opens its popup or fires onClicked). */
++    void executeActionFromMenu(String actionId);
+ }
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java
+index 648049286f..fd7c3d7e68 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java
+@@ -9,6 +9,7 @@ import android.app.Activity;
+ import android.content.ComponentCallbacks;
+ import android.content.Context;
+ import android.content.res.Configuration;
++import android.graphics.Bitmap;
+ import android.graphics.Rect;
+ import android.os.Handler;
+ import android.os.Looper;
+@@ -37,6 +38,7 @@ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
+ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature.InitInfo;
+ import org.chromium.chrome.browser.ui.extensions.ExtensionActionsBridge;
+ import org.chromium.chrome.browser.ui.extensions.ExtensionsToolbarBridge;
++import org.chromium.chrome.browser.ui.toolbar.InvocationSource;
+ import org.chromium.chrome.browser.user_education.IphCommandBuilder;
+ import org.chromium.chrome.browser.user_education.UserEducationHelper;
+ import org.chromium.components.embedder_support.contextmenu.ContextMenuPopulatorFactory;
+@@ -44,6 +46,7 @@ import org.chromium.components.feature_engagement.FeatureConstants;
+ import org.chromium.components.prefs.PrefChangeRegistrar;
+ import org.chromium.components.prefs.PrefService;
+ import org.chromium.components.user_prefs.UserPrefs;
++import org.chromium.content_public.browser.WebContents;
+ import org.chromium.content_public.browser.selection.SelectionDropdownMenuDelegate;
+ import org.chromium.ui.base.ViewUtils;
+ import org.chromium.ui.base.WindowAndroid;
+@@ -498,6 +501,42 @@ public class ExtensionsToolbarCoordinatorImpl
+         }
+     }
+ 
++    @Override
++    public void moveActionsToAppMenu(View root) {
++        mContainer.setVisibility(View.GONE);
++        mExtensionActionListCoordinator.setFallbackAnchorRoot(root);
++    }
++
++    @Override
++    public String[] getActionIds() {
++        return mExtensionsToolbarBridge.getAllActionIds();
++    }
++
++    private @Nullable WebContents getCurrentWebContents() {
++        Tab tab = mCurrentTabSupplier == null ? null : mCurrentTabSupplier.get();
++        return tab == null ? null : tab.getWebContents();
++    }
++
++    @Override
++    public String getActionName(String actionId) {
++        return mExtensionsToolbarBridge.getAction(actionId, getCurrentWebContents()).getName();
++    }
++
++    @Override
++    public @Nullable Bitmap getActionIcon(String actionId) {
++        return ExtensionActionIconUtil.getIcon(
++                mContainer.getContext(),
++                mWindowAndroid,
++                mExtensionsToolbarBridge,
++                actionId,
++                getCurrentWebContents());
++    }
++
++    @Override
++    public void executeActionFromMenu(String actionId) {
++        mExtensionActionListCoordinator.executeUserAction(actionId, InvocationSource.MENU_ENTRY);
++    }
++
+     @Override
+     public ToolbarWidthConsumer getPoppedOutActionWidthConsumer() {
+         return mPoppedOutActionWidthConsumer;
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
+index 89c5897bfd..f4e80659fc 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
+@@ -700,22 +700,14 @@ public class ToolbarPhone extends ToolbarLayout
+     public void setExtensionsToolbarCoordinator(
+             @Nullable ExtensionsToolbarCoordinator extensionsToolbarCoordinator) {
+         mExtensionsToolbarCoordinator = extensionsToolbarCoordinator;
++        // kiwi: extension actions live in the app menu, not the toolbar. The coordinator is still
++        // needed for its bridge and popups.
++        if (extensionsToolbarCoordinator != null) {
++            extensionsToolbarCoordinator.moveActionsToAppMenu(this);
++        }
+         requestLayout();
+     }
+ 
+-    // kiwi: phones have no toolbar width ranking (see ToolbarTablet). Give extensions a fixed
+-    // budget so a popup can anchor to its (popped out) action and one action can be pinned.
+-    // ponytail: fixed two-slot budget; rank against the omnibox like ToolbarTablet if needed.
+-    private void allocateExtensionsWidth() {
+-        if (mExtensionsToolbarCoordinator == null) return;
+-        int budget = Math.round(2 * 48 * getResources().getDisplayMetrics().density);
+-        budget -=
+-                mExtensionsToolbarCoordinator
+-                        .getPoppedOutActionWidthConsumer()
+-                        .updateVisibility(budget);
+-        mExtensionsToolbarCoordinator.getActionListWidthConsumer().updateVisibility(budget);
+-    }
+-
+     @Override
+     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+         // In case the call came from the handler after we destroyed the dependencies, skip the work
+@@ -724,7 +716,6 @@ public class ToolbarPhone extends ToolbarLayout
+             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+             return;
+         }
+-        allocateExtensionsWidth();
+         if (!mDisableLocationBarRelayout) {
+             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+ 

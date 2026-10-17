@@ -1,0 +1,84 @@
+From a7b6e9334bea1986ee158b0d2f37bc35a146c217 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 09:23:23 +0500
+Subject: [PATCH] Enable in-app DevTools on phones
+
+Upstream 153 ships the DevTools frontend (dev_ui_resources.pak), DevToolsWindow and a
+DevToolsActivity on Android behind the AndroidDevToolsFrontend feature, tablet-only.
+Enable the feature by default, show the 'Developer tools' app-menu item on phones (also in
+the no-submenu page menu) and allow long-press 'Inspect' on phones.
+---
+ .../browser/contextmenu/ChromeContextMenuPopulator.java      | 4 ++--
+ .../chrome/browser/tabbed_mode/MoreToolsItemBuilder.java     | 3 +--
+ .../browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java | 5 +++++
+ content/public/common/content_features.cc                    | 3 ++-
+ 4 files changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/contextmenu/ChromeContextMenuPopulator.java b/chrome/android/java/src/org/chromium/chrome/browser/contextmenu/ChromeContextMenuPopulator.java
+index 340688865c..6f2c77def1 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/contextmenu/ChromeContextMenuPopulator.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/contextmenu/ChromeContextMenuPopulator.java
+@@ -507,9 +507,9 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
+ 
+     @VisibleForTesting
+     boolean shouldShowDeveloperMenu() {
++        // kiwi: long-press "Inspect" on phones too.
+         return DevToolsWindowAndroid.isDevToolsAllowedFor(
+-                        getProfile(), mItemDelegate.getWebContents())
+-                && isTabletScreen();
++                getProfile(), mItemDelegate.getWebContents());
+     }
+ 
+     @VisibleForTesting
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+index 6ba7bb5719..87a01b790b 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+@@ -26,7 +26,6 @@ import org.chromium.components.embedder_support.util.UrlUtilities;
+ import org.chromium.content_public.browser.ContentFeatureList;
+ import org.chromium.content_public.browser.ContentFeatureMap;
+ import org.chromium.content_public.browser.WebContents;
+-import org.chromium.ui.base.DeviceFormFactor;
+ import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
+ import org.chromium.ui.modelutil.PropertyModel;
+ import org.chromium.url.GURL;
+@@ -250,8 +249,8 @@ public class MoreToolsItemBuilder {
+      * @param currentTab The current tab.
+      */
+     public boolean shouldShowDevToolsItem(@Nullable Tab currentTab) {
++        // kiwi: phones too (no tablet check).
+         if (!ContentFeatureMap.isEnabled(ContentFeatureList.ANDROID_DEV_TOOLS_FRONTEND)
+-                || !DeviceFormFactor.isNonMultiDisplayContextOnTablet(mContext)
+                 || currentTab == null
+                 || currentTab.isNativePage()) {
+             return false;
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+index bb3a549c51..1b7271439d 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+@@ -554,6 +554,11 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
+         // Divider Line
+         AppMenuItemUtils.maybeAddDividerLine(modelList, R.id.divider_line_id);
+ 
++        // kiwi: Developer tools (phones have no "More tools" submenu by default).
++        if (mMoreToolsItemBuilder.shouldShowDevToolsItem(currentTab)) {
++            modelList.add(mMoreToolsItemBuilder.buildDevToolsItem());
++        }
++
+         // Settings
+         modelList.add(buildSettingsItem());
+ 
+diff --git a/content/public/common/content_features.cc b/content/public/common/content_features.cc
+index ee92fe71b0..50aff0bd03 100644
+--- a/content/public/common/content_features.cc
++++ b/content/public/common/content_features.cc
+@@ -42,7 +42,8 @@ BASE_FEATURE(kAperitifHelpers, base::FEATURE_DISABLED_BY_DEFAULT);
+ #endif
+ 
+ // DevTools frontend for Android.
+-BASE_FEATURE(kAndroidDevToolsFrontend, base::FEATURE_DISABLED_BY_DEFAULT);
++// kiwi: in-app DevTools on phones too.
++BASE_FEATURE(kAndroidDevToolsFrontend, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+ // Enables media to continue playing in the background.
+ BASE_FEATURE(kAndroidEnableBackgroundMediaLargeFormFactors,

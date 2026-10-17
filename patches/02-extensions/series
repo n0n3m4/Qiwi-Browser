@@ -1,0 +1,5 @@
+Enable-extensions-on-Android-phone.patch
+Extension-actions-in-app-menu.patch
+Extensions-on-phones-guards.patch
+Extensions-browserAction-pageAction-schemas.patch
+Install-crx-downloads-by-file-extension.patch

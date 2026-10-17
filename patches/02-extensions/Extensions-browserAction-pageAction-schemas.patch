@@ -1,0 +1,60 @@
+From ca68cba363ce8b4b59a6ffce73051c1d0bac7e7f Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 16 Oct 2026 20:46:02 +0500
+Subject: [PATCH] Extensions: ship the browserAction and pageAction schemas on
+ Android
+
+api_sources.gni only added browser_action.json and page_action.json under
+`if (enable_extensions)`, i.e. for full desktop builds, while the renderer
+feature list exposes chrome.browserAction / chrome.pageAction to every MV2
+extension that declares them. The first call into either API then hit
+`LOG_IF(FATAL, !schema) << "Unknown API browserAction"` in
+NativeExtensionBindingsSystem and killed the extension process (uBlock Origin
+1.75 crash-looped on every start and ended up disabled; our own test
+extensions survived because they never call the API).
+
+The implementing function classes (BrowserAction*/PageAction* in
+//chrome/browser/extensions/api/extension_action) are already part of the
+extensions core and the registration generator consumes the uncompiled
+schema list, so moving the two files into the core list is the whole fix.
+
+Found by the runtime UI regression pass (testing/RUNTIME_UI.md, F14).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ chrome/common/extensions/api/api_sources.gni | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/chrome/common/extensions/api/api_sources.gni b/chrome/common/extensions/api/api_sources.gni
+index df6fb768af..4c9b8cccc7 100644
+--- a/chrome/common/extensions/api/api_sources.gni
++++ b/chrome/common/extensions/api/api_sources.gni
+@@ -60,9 +60,16 @@ if (enable_guest_view) {
+ # registration. These do not generate the strong C++ types.
+ uncompiled_sources_ = [
+   "action.json",
++  # MV2 action APIs: the function classes live in
++  # //chrome/browser/extensions/api/extension_action, which is part of the
++  # extensions core, so the schemas belong here too (without them the renderer
++  # dies with "Unknown API browserAction" as soon as an MV2 extension calls
++  # chrome.browserAction.*).
++  "browser_action.json",
+   "browsing_data.json",
+   "commands.json",
+   "extension.json",
++  "page_action.json",
+   "top_sites.json",
+ ]
+ 
+@@ -163,11 +170,6 @@ if (enable_extensions) {
+     schema_sources_ += [ "pdf_viewer_private.idl" ]
+   }
+ 
+-  uncompiled_sources_ += [
+-    "browser_action.json",
+-    "page_action.json",
+-  ]
+-
+   if (is_chromeos) {
+     uncompiled_sources_ += [
+       "chromeos_info_private.json",
