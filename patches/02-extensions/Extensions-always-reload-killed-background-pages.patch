@@ -1,0 +1,63 @@
+From 906feea411bf1ef37b4a45d6f1c73fc6397d8254 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 17:16:03 +0500
+Subject: [PATCH] Extensions: always reload killed background pages, like Kiwi
+
+Android kills extension renderers whenever memory gets tight, and the
+browser process lives for days. The auto-reload added with the phone
+extension runtime stopped after 5 reloads per extension per process, so
+on a phone uBlock Origin was eventually left terminated: gone from the
+app menu and not filtering until the app was restarted.
+
+Do what Kiwi does (its ExtensionRegistrar::TerminateExtension reloads
+quietly at once): reload right after the terminate, with no cap and no
+delay. Same trade-off as Kiwi: a background page that crashes on load
+is reloaded over and over.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../browser/extensions/extension_service.cc   | 24 +++++++------------
+ 1 file changed, 8 insertions(+), 16 deletions(-)
+
+diff --git a/chrome/browser/extensions/extension_service.cc b/chrome/browser/extensions/extension_service.cc
+index 370381c794..892ee86ec4 100644
+--- a/chrome/browser/extensions/extension_service.cc
++++ b/chrome/browser/extensions/extension_service.cc
+@@ -31,7 +31,6 @@
+ #include "base/strings/stringprintf.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/syslog_logging.h"
+-#include "base/no_destructor.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/threading/thread_restrictions.h"
+ #include "base/time/time.h"
+@@ -823,21 +822,14 @@ void ExtensionService::OnExtensionHostRenderProcessGone(
+                                 extension_host->extension_id()));
+ 
+ #if BUILDFLAG(IS_ANDROID)
+-  // kiwi: Android has no crash bubble to revive a killed background page (the
+-  // OS kills renderers under memory pressure), so reload it after a short
+-  // delay.
+-  // ponytail: per-session retry cap shared by all profiles; reset per id on
+-  // success if crash loops after long uptimes matter.
+-  static base::NoDestructor<std::map<ExtensionId, int>> reload_counts;
+-  constexpr int kMaxAutoReloads = 5;
+-  if (++(*reload_counts)[extension_host->extension_id()] <= kMaxAutoReloads) {
+-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+-        FROM_HERE,
+-        base::BindOnce(&ExtensionRegistrar::ReloadExtensionWithQuietFailure,
+-                       extension_registrar_->GetWeakPtr(),
+-                       extension_host->extension_id()),
+-        base::Seconds(2));
+-  }
++  // kiwi: Android has no crash bubble to revive a killed background page, and
++  // the OS kills renderers under memory pressure all the time, so reload it
++  // right after the terminate above, every time (as Kiwi does).
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE,
++      base::BindOnce(&ExtensionRegistrar::ReloadExtensionWithQuietFailure,
++                     extension_registrar_->GetWeakPtr(),
++                     extension_host->extension_id()));
+ #endif
+ }
+ 

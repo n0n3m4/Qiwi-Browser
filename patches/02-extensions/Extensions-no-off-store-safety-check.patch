@@ -1,0 +1,34 @@
+From ea8b18258a4707edaf8bc308ad3296f62fa8eed4 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sat, 17 Oct 2026 17:15:41 +0500
+Subject: [PATCH] Extensions: no off-store Safety Check warning
+
+chrome://extensions and Safety Hub flagged every extension that does not
+update from the Chrome Web Store with "can't verify where this extension
+comes from" and a Keep/Remove review panel. Without the Web Store every
+extension is off-store, so the warning is noise; the trigger is purely
+local (no server is asked). Turn kSafetyHubExtensionsOffStoreTrigger off
+by default. The malware/policy/unpublished triggers need CWS or Safe
+Browsing data that this build never fetches, so they stay as is.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ chrome/common/chrome_features.cc | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/common/chrome_features.cc b/chrome/common/chrome_features.cc
+index 565c2e5013..fff207f0cd 100644
+--- a/chrome/common/chrome_features.cc
++++ b/chrome/common/chrome_features.cc
+@@ -1515,8 +1515,10 @@ BASE_FEATURE(kSafetyHubExtensionsNoPrivacyPracticesTrigger,
+              base::FEATURE_ENABLED_BY_DEFAULT);
+ // Enables offstore extensions to be shown in the Safety Hub Extension
+ // review panel.
++// kiwi: no Web Store here, so every extension is "off-store"; the warning is
++// noise.
+ BASE_FEATURE(kSafetyHubExtensionsOffStoreTrigger,
+-             base::FEATURE_ENABLED_BY_DEFAULT);
++             base::FEATURE_DISABLED_BY_DEFAULT);
+ #endif
+ 
+ BASE_FEATURE(kSafetyHubThreeDotDetails, base::FEATURE_ENABLED_BY_DEFAULT);
