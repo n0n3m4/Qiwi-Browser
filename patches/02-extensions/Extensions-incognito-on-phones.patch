@@ -1,0 +1,314 @@
+From ad909197d8253ceab32f82b5420a00014e345801 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Sun, 18 Oct 2026 22:07:16 +0500
+Subject: [PATCH] Extensions: make Incognito work on phones
+
+Desktop Android opens Incognito in its own window; a phone keeps regular and
+Incognito tabs in one Activity with one AndroidBrowserWindow per profile.
+Several pieces assumed one profile per window:
+
+- The extension window controller was only created for the startup profile
+  (upstream TODO crbug.com/491791326). With an Incognito tab in front,
+  windows.getLastFocused() walked into the Incognito window, got a null
+  controller and crashed the browser (any extension calling it, even one
+  not allowed in Incognito). ChromeActivity now always gives the regular
+  window its controller and adds one for the Incognito window whenever it is
+  created, keyed to the Incognito TabModel so it is removed before that
+  window is destroyed.
+
+- Split-mode extensions (uBlock Origin) never got their Incognito background
+  page: an incognito ProcessManager does not schedule its startup hosts, and
+  the desktop ChromeProcessManagerDelegate that does so on window creation
+  does not exist on Android. AndroidBrowserWindow now asks the incognito
+  ProcessManager to create them when the Incognito window is created.
+
+- The app-menu extension rows came from one ExtensionsToolbarCoordinator
+  bound to the startup profile, so in Incognito the menu listed extensions
+  not allowed there, tapping one ran it in the regular profile, and popups
+  saw the regular tab. ToolbarManager now keeps one coordinator per profile
+  (created on first use, the Incognito one removed with its TabModel), each
+  inflating its own hidden container. Tablets keep the single regular
+  coordinator because their container is visible in the toolbar.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../chrome/browser/app/ChromeActivity.java    | 50 +++++++++-
+ .../browser/toolbar/ToolbarManager.java       | 97 +++++++++++++------
+ .../ExtensionsToolbarCoordinatorImpl.java     |  4 +
+ .../android/android_browser_window.cc         | 11 +++
+ 4 files changed, 128 insertions(+), 34 deletions(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
+index 2f7d2c479c..b7ac82c75a 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
+@@ -203,6 +203,8 @@ import org.chromium.chrome.browser.tab_ui.TabContentManager;
+ import org.chromium.chrome.browser.tabmodel.SupportedProfileType;
+ import org.chromium.chrome.browser.tabmodel.TabCreator;
+ import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
++import org.chromium.chrome.browser.tabmodel.IncognitoTabModel;
++import org.chromium.chrome.browser.tabmodel.IncognitoTabModelObserver;
+ import org.chromium.chrome.browser.tabmodel.TabModel;
+ import org.chromium.chrome.browser.tabmodel.TabModelInitializer;
+ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+@@ -1147,16 +1149,60 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
+                             pendingId);
+ 
+             // 3. Add windowing features.
+-            // TODO(crbug.com/491791326): Handle multiple profiles for mobile.
+-            Profile profile = tabModelSelector.getCurrentModel().getProfile();
++            // kiwi: phones keep regular and Incognito tabs in one Activity, and each profile has
++            // its own AndroidBrowserWindow. Upstream only gave the startup profile's window an
++            // extension window controller, so with an Incognito tab in front windows.* functions
++            // (getLastFocused) dereferenced a null controller and killed the browser.
++            Profile profile = tabModelSelector.getModel(/* incognito= */ false).getProfile();
++            if (profile == null) profile = tabModelSelector.getCurrentModel().getProfile();
+             assert profile != null;
+             addWindowingFeatures(chromeAndroidTask, profile, activityWindowAndroid);
++            if (!profile.isOffTheRecord()) {
++                addIncognitoExtensionWindowController(
++                        chromeAndroidTask, tabModelSelector, activityWindowAndroid);
++            }
+ 
+             // 4. Make the ChromeAndroidTask available via OneshotSupplier.
+             mChromeAndroidTaskSupplier.set(chromeAndroidTask);
+         }
+     }
+ 
++    // kiwi: the Incognito window exists only while the Incognito TabModel has tabs. The task
++    // creates it in its own IncognitoTabModelObserver, registered before this one, so the window
++    // is there when ours runs. Keying the feature to the TabModel removes it before that window is
++    // destroyed when the last Incognito tab closes.
++    private void addIncognitoExtensionWindowController(
++            ChromeAndroidTask chromeAndroidTask,
++            TabModelSelector tabModelSelector,
++            ActivityWindowAndroid activityWindowAndroid) {
++        IncognitoTabModel incognitoModel =
++                (IncognitoTabModel) tabModelSelector.getModel(/* incognito= */ true);
++        Runnable addController =
++                () -> {
++                    Profile incognitoProfile = incognitoModel.getProfile();
++                    if (incognitoProfile == null
++                            || chromeAndroidTask.getNativeBrowserWindowPtr(incognitoProfile, this)
++                                    == 0) {
++                        return;
++                    }
++                    chromeAndroidTask.addFeature(
++                            new ChromeAndroidTaskFeatureKey(
++                                    ExtensionWindowControllerBridge.class,
++                                    incognitoProfile,
++                                    activityWindowAndroid,
++                                    incognitoModel),
++                            ExtensionWindowControllerBridgeFactory::create);
++                };
++        incognitoModel.addIncognitoObserver(
++                new IncognitoTabModelObserver() {
++                    @Override
++                    public void onIncognitoModelCreated() {
++                        addController.run();
++                    }
++                });
++        addController.run();
++    }
++
+     /** Returns an {@link OneshotSupplier} for {@link ChromeAndroidTask}. */
+     protected final OneshotSupplier<ChromeAndroidTask> getChromeAndroidTaskSupplier() {
+         return mChromeAndroidTaskSupplier;
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java b/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
+index 81dd1ade18..7991318330 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
+@@ -279,8 +279,12 @@ import org.chromium.ui.widget.ChromeImageButton;
+ import org.chromium.ui.widget.ViewRectProvider;
+ import org.chromium.url.GURL;
+ 
++import java.util.ArrayList;
++import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ import java.util.Set;
++import java.util.function.Function;
+ import java.util.function.Supplier;
+ 
+ /**
+@@ -425,7 +429,13 @@ public class ToolbarManager
+     private @MonotonicNonNull TabSwitcherActionProvider mTabSwitcherActionProvider;
+     private @MonotonicNonNull BackButtonCoordinator mBackButtonCoordinator;
+     private @MonotonicNonNull ForwardButtonCoordinator mForwardButtonCoordinator;
+-    private @Nullable ExtensionsToolbarCoordinator mExtensionsToolbarCoordinator;
++    // kiwi: one coordinator per profile. Desktop Android opens Incognito in its own window; a
++    // phone keeps regular and Incognito tabs in one, and the app-menu extension rows must act on
++    // the profile of the tabs on screen (popups, onClicked, which extensions are listed).
++    private final Map<Profile, ExtensionsToolbarCoordinator> mExtensionsToolbarCoordinators =
++            new HashMap<>();
++    private @Nullable Function<Profile, @Nullable ExtensionsToolbarCoordinator>
++            mExtensionsToolbarCoordinatorFactory;
+ 
+     private final BrowserStateBrowserControlsVisibilityDelegate mControlsVisibilityDelegate;
+     private int mFullscreenFocusToken = TokenHolder.INVALID_TOKEN;
+@@ -2652,37 +2662,46 @@ public class ToolbarManager
+ 
+         ViewStub extensionsToolbarStub =
+                 mControlContainer.findViewById(R.id.extensions_toolbar_container_stub);
+-        if (extensionsToolbarStub != null) {
+-            ChromeAndroidTask task = mChromeAndroidTaskSupplier.get();
+-            // ChromeAndroidTask is available only on Desktop Android.
+-            if (task != null) {
+-                Profile tabModelProfile =
+-                        assertNonNull(mTabModelSelector.getCurrentModel().getProfile());
+-                // Register as an Activity-scoped feature of {@link ChromeAndroidTask}. This ensures
+-                // its C++ UnownedUserData objects are destroyed prior to the host (BWI) when a
+-                // Profile is destroyed on mobile Android. Explicit destruction in
+-                // ToolbarManager.destroy() is also preserved for standard Activity teardown.
+-                Runnable cleanup =
+-                        () -> {
+-                            if (mToolbar != null) {
+-                                mToolbar.setExtensionsToolbarCoordinator(null);
+-                            }
+-                            mExtensionsToolbarCoordinator = null;
+-                        };
+-                mExtensionsToolbarCoordinator =
+-                        (ExtensionsToolbarCoordinator)
++        // ChromeAndroidTask is available only on Desktop Android.
++        if (extensionsToolbarStub != null && mChromeAndroidTaskSupplier.get() != null) {
++            ViewGroup extensionsStubParent = (ViewGroup) extensionsToolbarStub.getParent();
++            mExtensionsToolbarCoordinatorFactory =
++                    coordinatorProfile -> {
++                        ChromeAndroidTask task = mChromeAndroidTaskSupplier.get();
++                        if (task == null) return null;
++                        // kiwi: every coordinator inflates its own (hidden on phones) container,
++                        // and the layout has a single stub.
++                        ViewStub stub = extensionsToolbarStub;
++                        if (stub.getParent() == null) {
++                            stub = new ViewStub(mActivity);
++                            extensionsStubParent.addView(stub);
++                        }
++                        ViewStub finalStub = stub;
++                        // Register as an Activity-scoped feature of {@link ChromeAndroidTask}. This
++                        // ensures its C++ UnownedUserData objects are destroyed prior to the host
++                        // (BWI) when a Profile is destroyed on mobile Android. Explicit destruction
++                        // in ToolbarManager.destroy() is also preserved for standard Activity
++                        // teardown.
++                        Runnable cleanup =
++                                () -> mExtensionsToolbarCoordinators.remove(coordinatorProfile);
++                        return (ExtensionsToolbarCoordinator)
+                                 task.addFeature(
+                                         new ChromeAndroidTaskFeatureKey(
+                                                 ExtensionsToolbarCoordinator.class,
+-                                                tabModelProfile,
+-                                                (ActivityWindowAndroid) mWindowAndroid),
++                                                coordinatorProfile,
++                                                (ActivityWindowAndroid) mWindowAndroid,
++                                                // kiwi: removed before the Incognito window is
++                                                // destroyed (last Incognito tab closed).
++                                                coordinatorProfile.isOffTheRecord()
++                                                        ? mTabModelSelector.getModel(true)
++                                                        : null),
+                                         () ->
+                                                 ExtensionsToolbarCoordinator.maybeCreate(
+                                                         mActivity,
+-                                                        extensionsToolbarStub,
++                                                        finalStub,
+                                                         mWindowAndroid,
+                                                         task,
+-                                                        tabModelProfile,
++                                                        coordinatorProfile,
+                                                         mActivityTabProvider.asObservable(),
+                                                         mTabCreatorManager.getTabCreator(false),
+                                                         getBrowsingModeThemeColorProvider(),
+@@ -2693,10 +2712,8 @@ public class ToolbarManager
+                                                         mTabModelSelector,
+                                                         mModalDialogManagerSupplier.get(),
+                                                         cleanup));
+-                if (mExtensionsToolbarCoordinator != null) {
+-                    mToolbar.setExtensionsToolbarCoordinator(mExtensionsToolbarCoordinator);
+-                }
+-            }
++                    };
++            getExtensionsToolbarCoordinator();
+         }
+ 
+         // Must be initialized before Toolbar attempts to use it.
+@@ -3057,10 +3074,12 @@ public class ToolbarManager
+             mAiModeActionCoordinator = null;
+         }
+ 
+-        if (mExtensionsToolbarCoordinator != null) {
+-            mExtensionsToolbarCoordinator.destroy();
+-            mExtensionsToolbarCoordinator = null;
++        for (ExtensionsToolbarCoordinator coordinator :
++                new ArrayList<>(mExtensionsToolbarCoordinators.values())) {
++            coordinator.destroy();
+         }
++        mExtensionsToolbarCoordinators.clear();
++        mExtensionsToolbarCoordinatorFactory = null;
+ 
+         if (mCallbackController != null) {
+             mCallbackController.destroy();
+@@ -3970,7 +3989,21 @@ public class ToolbarManager
+      *     if extensions are not supported on this build.
+      */
+     public @Nullable ExtensionsToolbarCoordinator getExtensionsToolbarCoordinator() {
+-        return mExtensionsToolbarCoordinator;
++        if (mExtensionsToolbarCoordinatorFactory == null || mTabModelSelector == null) return null;
++        Profile profile = mTabModelSelector.getCurrentModel().getProfile();
++        if (profile == null) return null;
++        // ponytail: tablets show the container in the toolbar and would need it swapped on every
++        // Incognito switch; they keep the single regular-profile coordinator.
++        if (mIsTablet) profile = profile.getOriginalProfile();
++        ExtensionsToolbarCoordinator coordinator = mExtensionsToolbarCoordinators.get(profile);
++        if (coordinator == null) {
++            coordinator = mExtensionsToolbarCoordinatorFactory.apply(profile);
++            if (coordinator == null) return null;
++            mExtensionsToolbarCoordinators.put(profile, coordinator);
++            // Hides the new container and gives its popups the toolbar as anchor (phones).
++            mToolbar.setExtensionsToolbarCoordinator(coordinator);
++        }
++        return coordinator;
+     }
+ 
+     /**
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java
+index 0b314314e9..2e8e91ace7 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionsToolbarCoordinatorImpl.java
+@@ -248,6 +248,10 @@ public class ExtensionsToolbarCoordinatorImpl
+         if (mContainer != null && mContainer.getContext() != null) {
+             mContainer.getContext().unregisterComponentCallbacks(this);
+         }
++        // kiwi: phones create one container per profile; drop the Incognito one with its profile.
++        if (mContainer != null && mContainer.getParent() instanceof ViewGroup parent) {
++            parent.removeView(mContainer);
++        }
+ 
+         mExtensionsToolbarBridge.removeObserver(mExtensionsToolbarBridgeObserver);
+         mExtensionAccessControlButtonCoordinator.destroy();
+diff --git a/chrome/browser/ui/browser_window/internal/android/android_browser_window.cc b/chrome/browser/ui/browser_window/internal/android/android_browser_window.cc
+index d0a6d05c15..c04ee00c17 100644
+--- a/chrome/browser/ui/browser_window/internal/android/android_browser_window.cc
++++ b/chrome/browser/ui/browser_window/internal/android/android_browser_window.cc
+@@ -33,6 +33,7 @@
+ #include "chrome/browser/extensions/extension_browser_window_helper.h"
+ #include "chrome/common/pref_names.h"
+ #include "content/public/browser/devtools_agent_host.h"
++#include "extensions/browser/process_manager.h"
+ #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+ 
+ namespace {
+@@ -65,6 +66,16 @@ AndroidBrowserWindow::AndroidBrowserWindow(
+   extension_browser_window_helper_ =
+       std::make_unique<extensions::ExtensionBrowserWindowHelper>(this, profile);
+ 
++  // kiwi: an incognito ProcessManager does not schedule its own startup
++  // background hosts; on desktop ChromeProcessManagerDelegate::OnBrowserCreated
++  // does it when the profile's first window opens, but Android has no
++  // ProcessManagerDelegate. Without this, split-mode extensions (uBlock Origin)
++  // never got their incognito background page and did nothing in Incognito.
++  if (profile->IsOffTheRecord()) {
++    extensions::ProcessManager::Get(profile)
++        ->MaybeCreateStartupBackgroundHosts();
++  }
++
+   profile_pref_registrar_.Init(profile_->GetPrefs());
+   profile_pref_registrar_.Add(
+       prefs::kDevToolsAvailability,
